@@ -1,180 +1,87 @@
-# Caipture — Metadata Schema Specification
+# Caipture - Metadata Schema Specification
 
-Version: 0.1
+Version: 0.2.0
 Status: Draft
-Applies to: Photo Item Metadata
+Applies to: Canonical per-item metadata (`photo_item.json`)
 
 ---
 
 # 1. Purpose
 
-This document defines the **canonical metadata schema** used by Caipture to represent historical photograph information.
+This document defines the canonical internal metadata schema used by Caipture.
 
-The schema serves several goals:
+The schema is designed to:
 
-* store structured metadata derived from photographs
-* preserve original contextual evidence
-* track provenance and confidence
-* support reproducible processing pipelines
-* allow human corrections without losing earlier interpretations
-* provide mappings to archival metadata standards
+- preserve evidence and provenance
+- represent uncertainty explicitly
+- support human correction workflows
+- provide deterministic input for export mapping
 
-The schema is intentionally **separate from EXIF/IPTC/XMP** so that historical uncertainty and provenance can be represented correctly.
+This schema is independent from EXIF/IPTC/XMP. External standards are export targets, not source-of-truth formats.
 
 ---
 
-# 2. Design Principles
+# 2. Canonical Location
 
-## 2.1 Canonical Internal Representation
-
-Caipture maintains its own canonical metadata representation.
-
-External metadata standards are used only for export.
-
-This allows:
-
-* uncertain dates
-* multiple evidence sources
-* competing interpretations
-* provenance tracking
-
----
-
-## 2.2 Evidence Preservation
-
-All extracted evidence must be preserved.
-
-Examples:
-
-* raw OCR text
-* album captions
-* handwritten notes
-* model-generated interpretations
-
-The system must never overwrite or discard evidence.
-
----
-
-## 2.3 Confidence Tracking
-
-Each interpreted field must include a **confidence value**.
-
-Confidence values range from:
+Canonical file path:
 
 ```text
-0.0 – 1.0
+storage/jobs/<job_id>/metadata/photo_item.json
 ```
 
-Meaning:
-
-* `1.0` very high certainty
-* `0.7` likely correct
-* `0.5` uncertain guess
-* `<0.5` weak hypothesis
+Only this file is authoritative for structured item metadata.
 
 ---
 
-## 2.4 Provenance
+# 3. Type Conventions
 
-Each metadata field must record its source.
+## 3.1 Timestamp
 
-Example sources:
-
-* `back_note`
-* `album_caption`
-* `vision_model`
-* `manual_entry`
-* `ocr_text`
-
----
-
-## 2.5 Historical Date Support
-
-Historical photographs often have imprecise dates.
-
-The schema must support:
-
-* exact date
-* year only
-* month range
-* seasonal range
-* approximate date
-
-Examples:
+All timestamps use UTC ISO-8601 format, for example:
 
 ```text
-1934
-June 1934
-Summer 1934
-circa 1934
-1930–1935
+2026-03-09T10:15:30Z
 ```
+
+## 3.2 Confidence
+
+`confidence` is a float in `[0.0, 1.0]`.
+
+## 3.3 Relative Paths
+
+All artifact paths are relative to `storage/jobs/<job_id>/`.
+
+## 3.4 Null and Missing Rules
+
+- Required fields must always exist.
+- Optional fields may be omitted.
+- Use `null` only when field existence is required but value is unknown.
+- Do not invent placeholder values (for example `"unknown"`) unless explicitly defined enum value.
 
 ---
 
-# 3. Metadata Object Structure
+# 4. Top-Level Object
 
-Each processed photograph corresponds to one metadata document.
+## 4.1 Required Fields
 
-Top-level structure:
+- `schema_version` (string)
+- `item_id` (string)
+- `job_id` (string)
+- `created_at` (timestamp)
+- `updated_at` (timestamp)
+- `status` (enum)
+- `inputs` (object)
+- `derived` (object)
+- `historical_metadata` (object)
+- `digitization_metadata` (object)
+- `review` (object)
 
-```json id="json1"
-{
-  "schema_version": "0.1.0",
-  "item_id": "string",
-  "job_id": "string",
-  "created_at": "timestamp",
-  "status": "processing_state",
-  "inputs": {},
-  "derived": {},
-  "historical_metadata": {},
-  "digitization_metadata": {},
-  "review": {},
-  "export_mapping": {}
-}
-```
+## 4.2 Optional Fields
 
----
+- `export_mapping` (object)
+- `revisions` (array)
 
-# 4. Identification Fields
-
-## 4.1 schema_version
-
-Defines the version of the metadata schema.
-
-Example:
-
-```json id="json2"
-"schema_version": "0.1.0"
-```
-
----
-
-## 4.2 item_id
-
-Stable identifier for the photograph.
-
-Example:
-
-```json id="json3"
-"item_id": "photo_000124"
-```
-
----
-
-## 4.3 job_id
-
-Identifier for the processing job that produced this metadata.
-
-Example:
-
-```json id="json4"
-"job_id": "job_20260308_000124"
-```
-
----
-
-# 5. Processing Status
+## 4.3 Status Enum
 
 Allowed values:
 
@@ -188,143 +95,175 @@ completed
 failed
 ```
 
-Example:
+---
 
-```json id="json5"
-"status": "review_required"
+# 5. JSON Shape (Normative)
+
+```json
+{
+  "schema_version": "0.2.0",
+  "item_id": "item_20260309_0001",
+  "job_id": "job_20260309_0001",
+  "created_at": "2026-03-09T10:15:30Z",
+  "updated_at": "2026-03-09T10:16:10Z",
+  "status": "review_required",
+  "inputs": {},
+  "derived": {},
+  "historical_metadata": {},
+  "digitization_metadata": {},
+  "review": {},
+  "export_mapping": {},
+  "revisions": []
+}
 ```
 
 ---
 
-# 6. Input References
+# 6. `inputs` Object
 
-The `inputs` section references raw uploaded files.
+## 6.1 Required Members
+
+- `front_image` (object)
+- `back_image` (object)
+
+## 6.2 Optional Members
+
+- `context_images` (array)
+
+## 6.3 FileRef Type
+
+`FileRef` object:
+
+- `path` (required string)
+- `sha256` (required string, lowercase hex)
+- `mime_type` (optional string)
+- `bytes` (optional integer)
 
 Example:
 
-```json id="json6"
+```json
 "inputs": {
   "front_image": {
     "path": "inputs/front.jpg",
-    "sha256": "hash"
+    "sha256": "f4c3...",
+    "mime_type": "image/jpeg"
   },
   "back_image": {
     "path": "inputs/back.jpg",
-    "sha256": "hash"
+    "sha256": "8a9b..."
   },
   "context_images": [
     {
-      "path": "inputs/album_page.jpg",
-      "sha256": "hash"
+      "path": "inputs/context_001.jpg",
+      "sha256": "11aa..."
     }
   ]
 }
 ```
 
-Purpose:
+---
 
-* maintain traceability
-* allow reproducibility
-* verify file integrity
+# 7. `derived` Object
+
+Holds references to generated artifacts.
+
+Known keys (all optional, implementation may extend):
+
+- `front_cropped`
+- `front_rectified`
+- `front_normalized`
+- `back_ocr_text`
+- `context_ocr_texts` (array)
+- `validation_report`
+- `ocr_report`
+
+All values are relative paths (or arrays of relative paths).
 
 ---
 
-# 7. Derived Artifacts
+# 8. `historical_metadata` Object
 
-Derived artifacts are outputs of processing steps.
+Holds interpreted historical context fields.
 
-Example:
+## 8.1 Common Interpretation Type
 
-```json id="json7"
-"derived": {
-  "front_cropped": "derived/front_cropped.jpg",
-  "front_rectified": "derived/front_rectified.jpg",
-  "back_ocr_text": "derived/back_ocr.txt",
-  "context_ocr_text": "derived/context_ocr.txt"
-}
+Most interpreted fields should follow this shape:
+
+- `value` (type varies)
+- `raw_text` (optional string)
+- `confidence` (required float 0..1)
+- `sources` (required array of SourceRef)
+
+`SourceRef`:
+
+- `source_type` (enum)
+- `source_ref` (string path/id)
+- `excerpt` (optional string)
+
+`source_type` enum:
+
+```text
+back_note
+album_caption
+context_image
+ocr_text
+rule_engine
+vision_model
+llm_inference
+manual_entry
 ```
 
-Derived artifacts must be immutable.
+## 8.2 `date` Field
 
----
+Type:
 
-# 8. Historical Metadata
-
-The `historical_metadata` section stores interpreted contextual data.
-
-Fields include:
-
-* date
-* location
-* people
-* description
-* event
-
----
-
-## 8.1 Date Object
-
-Example:
-
-```json id="json8"
+```json
 "date": {
   "raw_text": "Summer 1934",
   "from": "1934-06-01",
   "to": "1934-08-31",
   "precision": "season",
   "confidence": 0.78,
-  "sources": ["back_note", "album_caption"]
+  "sources": []
 }
 ```
 
-### Fields
+Constraints:
 
-| Field      | Description                 |
-| ---------- | --------------------------- |
-| raw_text   | original textual reference  |
-| from       | earliest possible date      |
-| to         | latest possible date        |
-| precision  | year/month/day/season/range |
-| confidence | confidence value            |
-| sources    | evidence sources            |
+- `precision` enum: `year|month|day|season|range|unknown`
+- if both `from` and `to` exist, `from <= to`
+- for `precision=day`, `from` and `to` should be same date
 
----
+## 8.3 `location` Field
 
-## 8.2 Location Object
+Type:
 
-Example:
-
-```json id="json9"
+```json
 "location": {
   "raw_text": "Enschede",
   "normalized": {
     "name": "Enschede, Overijssel, Netherlands",
+    "country_code": "NL",
     "lat": 52.2215,
     "lon": 6.8937
   },
   "confidence": 0.74,
-  "sources": ["back_note"]
+  "sources": []
 }
 ```
 
----
+`normalized` members are optional except `name` when present.
 
-## 8.3 People
+## 8.4 `people` Field
 
-Example:
+Type: array of objects:
 
-```json id="json10"
-"people": [
-  {
-    "name": "Jan de Vries",
-    "role": "possible_subject",
-    "confidence": 0.62,
-    "sources": ["album_caption"]
-  }
-]
-```
+- `name` (required string)
+- `role` (required enum)
+- `confidence` (required float)
+- `sources` (required array)
 
-Possible roles:
+`role` enum:
 
 ```text
 subject
@@ -333,190 +272,173 @@ photographer
 unknown_person
 ```
 
----
+## 8.5 `description` Field
 
-## 8.4 Description
+Type:
 
-Example:
+- `text` (required string)
+- `confidence` (required float)
+- `sources` (required array)
 
-```json id="json11"
-"description": {
-  "text": "Family standing in front of a brick house.",
-  "confidence": 0.55,
-  "sources": ["vision_model"]
-}
-```
+## 8.6 Optional Fields
 
----
+- `event`
+- `keywords`
+- `collection`
 
-## 8.5 Event (Optional)
-
-Example:
-
-```json id="json12"
-"event": {
-  "name": "Family vacation",
-  "confidence": 0.4,
-  "sources": ["album_caption"]
-}
-```
+Optional fields should follow the same provenance/confidence pattern.
 
 ---
 
-# 9. Digitization Metadata
+# 9. `digitization_metadata` Object
 
-This section describes the digitization process.
+Required fields:
+
+- `digitized_at` (timestamp)
+- `pipeline_version` (string)
+- `config_version` (string)
+
+Optional fields:
+
+- `operator` (string)
+- `capture_device` (string)
+- `tools` (object map of component -> version)
+- `run_id` (string)
 
 Example:
 
-```json id="json13"
+```json
 "digitization_metadata": {
-  "digitized_at": "2026-03-08T14:32:10Z",
-  "device": "iPhone 15 Pro",
+  "digitized_at": "2026-03-09T10:15:30Z",
+  "pipeline_version": "0.2.0",
+  "config_version": "dev-2026-03-09",
   "operator": "twan",
-  "pipeline_version": "0.1.0"
-}
-```
-
----
-
-# 10. Review Metadata
-
-Example:
-
-```json id="json14"
-"review": {
-  "required": true,
-  "reasons": [
-    "date_precision_low",
-    "person_confidence_low"
-  ],
-  "approved_by": null,
-  "approved_at": null
-}
-```
-
-Purpose:
-
-* enforce human validation
-* record review history
-
----
-
-# 11. Export Mapping
-
-This section maps internal metadata to external formats.
-
-Example:
-
-```json id="json15"
-"export_mapping": {
-  "exif": {
-    "DateTimeDigitized": "2026:03:08 14:32:10"
-  },
-  "iptc": {
-    "CaptionAbstract": "Family standing in front of a brick house."
-  },
-  "xmp": {
-    "photos:HistoricalDateFrom": "1934-06-01",
-    "photos:HistoricalDateTo": "1934-08-31"
+  "tools": {
+    "opencv": "4.10.0",
+    "tesseract": "5.4.0"
   }
 }
 ```
 
-Mapping occurs during export.
-
 ---
 
-# 12. Confidence Thresholds
+# 10. `review` Object
 
-Recommended thresholds:
+Required fields:
 
-| Range   | Meaning                  |
-| ------- | ------------------------ |
-| ≥0.9    | safe automation          |
-| 0.6–0.9 | human review recommended |
-| <0.6    | weak hypothesis          |
+- `required` (boolean)
+- `reasons` (array of strings)
+- `status` (enum)
 
----
+Optional fields:
 
-# 13. Schema Versioning
+- `approved_by` (string or null)
+- `approved_at` (timestamp or null)
+- `changes` (array)
+- `notes` (string)
 
-The schema must support version evolution.
+`review.status` enum:
 
-Rules:
-
-* schema_version must be recorded
-* backward compatibility preferred
-* migrations must be documented
-
----
-
-# 14. Validation
-
-Metadata documents must pass validation checks before export.
-
-Validation includes:
-
-* schema compliance
-* required fields present
-* confidence values within range
-* date ranges valid
-
----
-
-# 15. Storage
-
-Metadata files must be stored with job artifacts.
-
-Example:
-
-```id="json16"
-storage/jobs/<job_id>/metadata/photo_item.json
+```text
+not_required
+pending
+approved
+rejected
 ```
 
----
+`changes[]` item:
 
-# 16. Future Extensions
-
-Possible schema extensions:
-
-* face clusters
-* duplicate detection
-* timeline reconstruction
-* collection grouping
-* improved provenance tracking
-
-These extensions must maintain backward compatibility.
+- `field_path` (string)
+- `before` (any)
+- `after` (any)
+- `changed_by` (string)
+- `changed_at` (timestamp)
 
 ---
 
-# 17. Example Full Metadata Document
+# 11. `export_mapping` Object
 
-```json id="json17"
+Optional object populated by export stage.
+
+Structure:
+
+- `exif` object map
+- `iptc` object map
+- `xmp` object map
+- `exported_at` timestamp
+- `export_profile` string
+
+This section is derived, never canonical source.
+
+---
+
+# 12. `revisions` Object
+
+Optional append-only history of canonical edits.
+
+`revisions[]` item:
+
+- `revision` (integer)
+- `timestamp` (timestamp)
+- `actor` (string)
+- `reason` (string)
+- `changes_summary` (string)
+
+---
+
+# 13. Validation Rules
+
+Minimum validator checks:
+
+1. required fields present
+2. enum values valid
+3. confidence values within range
+4. all referenced artifact paths are relative and within job directory
+5. status value compatible with review/export fields
+6. date range consistency
+7. source provenance present for interpreted fields
+
+Validation must run before export.
+
+---
+
+# 14. Configuration-Coupled Rules
+
+The following behavior is configuration-driven and must not be hard-coded:
+
+- thresholds for auto-approval and review-required
+- allowed source types extensions
+- export profile selection
+- mapping profile from canonical fields to EXIF/IPTC/XMP
+
+Schema structure remains stable while policy thresholds come from configuration files.
+
+---
+
+# 15. Example Complete Document
+
+```json
 {
-  "schema_version": "0.1.0",
-  "item_id": "photo_000124",
-  "job_id": "job_20260308_000124",
-  "created_at": "2026-03-08T14:32:10Z",
+  "schema_version": "0.2.0",
+  "item_id": "item_20260309_0001",
+  "job_id": "job_20260309_0001",
+  "created_at": "2026-03-09T10:15:30Z",
+  "updated_at": "2026-03-09T10:17:10Z",
   "status": "review_required",
-
   "inputs": {
     "front_image": {
       "path": "inputs/front.jpg",
-      "sha256": "..."
+      "sha256": "f4c3..."
     },
     "back_image": {
       "path": "inputs/back.jpg",
-      "sha256": "..."
+      "sha256": "8a9b..."
     }
   },
-
   "derived": {
     "front_rectified": "derived/front_rectified.jpg",
     "back_ocr_text": "derived/back_ocr.txt"
   },
-
   "historical_metadata": {
     "date": {
       "raw_text": "Summer 1934",
@@ -524,35 +446,41 @@ These extensions must maintain backward compatibility.
       "to": "1934-08-31",
       "precision": "season",
       "confidence": 0.78,
-      "sources": ["back_note"]
+      "sources": [
+        {
+          "source_type": "ocr_text",
+          "source_ref": "derived/back_ocr.txt",
+          "excerpt": "Summer 1934"
+        }
+      ]
     },
     "location": {
       "raw_text": "Enschede",
       "normalized": {
-        "name": "Enschede, Netherlands",
+        "name": "Enschede, Overijssel, Netherlands",
+        "country_code": "NL",
         "lat": 52.2215,
         "lon": 6.8937
       },
       "confidence": 0.74,
-      "sources": ["back_note"]
+      "sources": [
+        {
+          "source_type": "back_note",
+          "source_ref": "inputs/back.jpg"
+        }
+      ]
     },
-    "people": [],
-    "description": {
-      "text": "Family standing in front of a house.",
-      "confidence": 0.55,
-      "sources": ["vision_model"]
-    }
+    "people": []
   },
-
   "digitization_metadata": {
-    "digitized_at": "2026-03-08T14:32:10Z",
-    "device": "iPhone",
-    "pipeline_version": "0.1.0"
+    "digitized_at": "2026-03-09T10:15:30Z",
+    "pipeline_version": "0.2.0",
+    "config_version": "dev-2026-03-09"
   },
-
   "review": {
     "required": true,
-    "reasons": ["low_description_confidence"]
+    "reasons": ["date_precision_not_day", "location_confidence_below_threshold"],
+    "status": "pending"
   }
 }
 ```

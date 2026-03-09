@@ -1,6 +1,6 @@
-# Caipture — Requirements Specification
+# Caipture - Requirements Specification
 
-Version: 0.1 (PoC baseline)
+Version: 0.2 (PoC implementation baseline)
 Status: Draft
 Scope: Personal and small-collection historical photograph digitization pipeline
 
@@ -8,251 +8,147 @@ Scope: Personal and small-collection historical photograph digitization pipeline
 
 # 1. Purpose
 
-Caipture is a self-hosted software system designed to convert physical photograph collections into structured digital archive assets.
+Caipture is a self-hosted system that converts physical photograph collections into structured digital archive assets.
 
-The system processes images of photo prints and album pages, extracts contextual information (e.g., handwritten notes), and produces corrected images with structured metadata while preserving provenance and processing history.
+The system must:
 
-The system prioritizes:
+- preserve original evidence
+- produce reproducible outputs
+- enforce privacy-aware boundaries
+- support human-in-the-loop validation
+- remain configurable so behavior can be adapted without changing source code
 
-* reproducibility
-* verifiable processing pipelines
-* privacy-preserving local operation
-* structured archival metadata
-* modular architecture suitable for automation
-
-This document defines the functional and non-functional requirements that constrain the project scope.
+This document defines functional and non-functional requirements intended to be directly implementable.
 
 ---
 
-# 2. Project Scope
+# 2. Scope
 
 ## 2.1 In Scope
 
-The Caipture system shall provide:
+1. Upload front/back/context images for a photo item
+2. Automated CV processing of front image
+3. OCR extraction from back/context images
+4. Metadata interpretation with provenance and confidence
+5. Human review and correction
+6. Export with EXIF/IPTC/XMP and sidecar JSON
+7. Local-first deployment with containerized services
+8. Job-level logging, metrics, and traceability
 
-1. Digitization workflow support for physical photographs
-2. Automated processing of uploaded images
-3. Extraction of contextual metadata from photo backs and album pages
-4. AI-assisted interpretation of contextual text
-5. Structured metadata generation
-6. Human verification and correction
-7. Export of archival images with embedded metadata
-8. Containerized deployment
-9. Reproducible processing pipelines
-10. Local hosting with minimal external dependencies
-11. Logging, metrics, and traceability
+## 2.2 Out of Scope (PoC)
 
-## 2.2 Out of Scope
-
-The following features are explicitly out of scope for the PoC:
-
-* Cloud-hosted SaaS deployment
-* Mobile application development
-* Automatic face recognition / identification
-* Social media integration
-* Automatic public sharing of archives
-* Large institutional archive workflows
-* Distributed multi-node processing clusters
-* Full DAM (Digital Asset Management) replacement systems
+- Multi-tenant SaaS hosting
+- Mobile app clients
+- Autonomous identity recognition of people
+- Social publishing integrations
+- Distributed multi-node processing
+- Full DAM replacement workflows
 
 ---
 
-# 3. System Goals
+# 3. Actors
 
-The system must support the following goals:
+## 3.1 Primary User
 
-1. Digitize historical photographs reliably
-2. Preserve contextual information
-3. Maintain provenance and traceability
-4. Enable partial automation without removing human oversight
-5. Minimize risk of data exposure
-6. Support reproducible research-like workflows
-7. Allow iterative improvement of processing components
+Can upload items, review metadata, approve/correct results, and export outputs.
+
+## 3.2 Maintainer
+
+Can configure and operate deployments, inspect logs/metrics, and maintain services.
+
+## 3.3 Development Assistant (Codex/OpenClaw)
+
+Can assist code/docs/tests in development zone only.
+
+Must not access production archive data or deploy without human approval.
 
 ---
 
-# 4. System Actors
+# 4. Core Principles
 
-### Primary User
-
-Person digitizing and organizing the photograph archive.
-
-Capabilities:
-
-* upload photos
-* review extracted metadata
-* approve or correct results
-* export processed images
-
-### Developer / Maintainer
-
-Capabilities:
-
-* modify codebase
-* maintain processing pipeline
-* improve algorithms
-* review automated pull requests
-
-### AI Assistant (e.g., OpenClaw / Codex)
-
-Capabilities:
-
-* assist with code generation
-* propose improvements
-* open issues and pull requests
-
-Restrictions:
-
-* must not access production archive data
-* cannot deploy code without human approval
+1. Raw uploads are immutable.
+2. Canonical metadata is the source of truth.
+3. Exports are derived from canonical metadata.
+4. All non-secret behavior should be parameterized in configuration.
+5. Secrets must be injected via environment or secret files.
 
 ---
 
 # 5. Functional Requirements
 
-## 5.1 Image Upload
+## 5.1 Upload and Job Creation
 
-The system shall allow uploading of:
+`FR-001` The system shall accept `front_image`, `back_image`, and optional `context_images[]`.
 
-* photo front image
-* photo back image
-* optional contextual images (album page, captions)
+`FR-002` Accepted file formats shall be configurable via `allowed_image_formats`.
 
-Requirements:
+`FR-003` Minimum resolution threshold shall be configurable via `min_longest_side_px`.
 
-* images must be stored unchanged as raw input
-* each upload creates a **job identifier**
-* job metadata must be persisted
+`FR-004` Every accepted upload shall create a unique `job_id` and stable `item_id`.
 
-Supported formats:
+`FR-005` Raw files shall be stored unchanged under `storage/jobs/<job_id>/inputs/`.
 
-* JPEG
-* PNG
-* TIFF
+`FR-006` Input checksums (SHA-256) shall be stored in canonical metadata.
 
-Minimum resolution requirement:
+## 5.2 Validation and CV Processing
 
-* 1500px on the longest side
+`FR-010` Validation shall evaluate blur, glare, perspective distortion, edge clipping, and multi-photo detection.
 
----
+`FR-011` Validation thresholds shall be configurable (not hard-coded).
 
-## 5.2 Early Image Quality Validation
+`FR-012` On validation failure, status shall become `validation_failed` with machine-readable reasons.
 
-Before accepting a job into the processing queue, the system shall perform image quality checks.
+`FR-013` CV worker shall produce front-image derivatives: boundary mask (optional), cropped image, rectified image, orientation-normalized image.
 
-The system should detect:
+`FR-014` Output formats and quality settings shall be configurable.
 
-* blur
-* glare / reflections
-* excessive perspective distortion
-* cropped edges
-* low resolution
-* multi-photo frames
+## 5.3 OCR Processing
 
-If problems are detected the system shall:
+`FR-020` OCR shall run on back image and each context image.
 
-* return warnings or rejection messages
-* allow user to retry upload
+`FR-021` OCR engine configuration (language packs, dpi hints, pre-processing toggles) shall be parameterized.
 
----
+`FR-022` OCR output shall include raw text, confidence summary, and source reference.
 
-## 5.3 Image Processing Pipeline
+`FR-023` OCR artifacts shall be retained even if downstream metadata parsing fails.
 
-The system shall perform automated processing on the front image:
+## 5.4 Metadata Interpretation
 
-1. detect photograph boundary
-2. crop the photograph
-3. rectify perspective
-4. normalize orientation
-5. produce corrected output image
+`FR-030` Metadata worker shall generate canonical `photo_item.json` conforming to `docs/metadata-schema.md`.
 
-Outputs must be stored as derived artifacts.
+`FR-031` Every interpreted field shall include confidence and provenance sources.
 
-The raw input image must remain unchanged.
+`FR-032` Interpretation policy (thresholds, enabled heuristics, provider usage) shall be configurable.
 
----
+`FR-033` If AI interpretation is enabled, only `llm-gateway` may perform external calls.
 
-## 5.4 OCR Processing
+`FR-034` Metadata worker shall produce explicit `review.required` and `review.reasons[]` values.
 
-The system shall perform OCR on:
+## 5.5 Review Workflow
 
-* photo back image
-* contextual images (album pages)
+`FR-040` Web UI shall present proposed metadata with evidence and confidence.
 
-Outputs must include:
+`FR-041` User shall be able to approve or edit metadata fields.
 
-* raw OCR text
-* extracted confidence values
-* reference to source image
+`FR-042` Review actions shall be auditable with actor, timestamp, changed fields, and optional note.
 
-OCR results must be stored as artifacts.
+`FR-043` Review-required policy shall be configuration-driven.
 
----
+## 5.6 Export
 
-## 5.5 Metadata Interpretation
+`FR-050` Export worker shall generate files under `storage/jobs/<job_id>/exports/`.
 
-The system shall convert contextual text into structured metadata.
+`FR-051` Export worker shall map canonical metadata to EXIF/IPTC/XMP according to configurable mapping rules.
 
-Interpretation may include:
+`FR-052` Export shall include sidecar JSON containing canonical metadata snapshot and export metadata.
 
-* date estimation
-* location normalization
-* subject names
-* description generation
+`FR-053` Export shall never mutate raw inputs.
 
-AI models may be used for interpretation.
+## 5.7 Job State Model
 
-Outputs must include:
+`FR-060` Jobs shall use the following statuses only:
 
-* structured metadata
-* confidence values
-* provenance (source evidence)
-
----
-
-## 5.6 Metadata Review
-
-The system shall allow users to review extracted metadata.
-
-Users must be able to:
-
-* edit fields
-* correct interpretations
-* approve results
-* reject results
-
-Approval status must be stored.
-
----
-
-## 5.7 Metadata Export
-
-The system shall embed metadata into exported images.
-
-Supported formats:
-
-* EXIF
-* IPTC
-* XMP
-
-Additionally:
-
-* metadata JSON sidecar must be produced.
-
----
-
-## 5.8 Job Tracking
-
-Each job must maintain:
-
-* job identifier
-* processing state
-* timestamps
-* artifact references
-
-Processing states:
-
-```
+```text
 uploaded
 validation_failed
 queued
@@ -262,287 +158,101 @@ completed
 failed
 ```
 
----
+`FR-061` State transitions shall be validated to prevent illegal jumps.
 
-## 5.9 Logging
+`FR-062` State transition policy shall be centrally defined and test-covered.
 
-The system shall generate structured logs for:
+## 5.8 Observability
 
-* job events
-* processing steps
-* errors
+`FR-070` Each service shall emit structured logs containing at minimum: `timestamp`, `service`, `job_id` (if applicable), `severity`, `event_type`, `message`.
 
-Logs must include:
+`FR-071` Metrics shall include upload count, queue depth, per-step duration, failure count, and review-required rate.
 
-* job_id
-* service
-* timestamp
-* severity
+`FR-072` Per-job debug bundle generation shall be supported via scriptable command.
 
 ---
 
-## 5.10 Metrics
+# 6. Configuration and Parameterization Requirements
 
-The system shall provide operational metrics including:
+## 6.1 Configuration Sources
 
-* number of uploads
-* queue length
-* success/failure rate
-* processing duration
-* system errors
+`CFG-001` Non-secret runtime behavior shall be defined in version-controlled config files under:
 
-Metrics must be visible in the web interface.
+- `deploy/configs/dev/`
+- `deploy/configs/rpi/`
 
----
+`CFG-002` Environment-specific overrides shall be supported.
 
-# 6. Non-Functional Requirements
+`CFG-003` Secrets shall never be committed and must be injected via environment variables or mounted secret files.
 
-## 6.1 Privacy
+## 6.2 Mandatory Parameterized Domains
 
-The system must prioritize privacy.
+`CFG-010` Storage paths and retention
+`CFG-011` Queue behavior (retry counts, backoff, concurrency)
+`CFG-012` CV thresholds
+`CFG-013` OCR configuration
+`CFG-014` Review thresholds and rules
+`CFG-015` LLM gateway policy and provider settings
+`CFG-016` Export mapping and output presets
+`CFG-017` Logging level and sampling
+`CFG-018` Feature flags (e.g., enable/disable external AI)
 
-Requirements:
+## 6.3 Configuration Validation
 
-* raw images must remain local
-* minimal contextual data may be sent to external AI models
-* system must operate without public internet exposure
+`CFG-020` Startup shall fail fast on invalid config with clear diagnostics.
 
----
-
-## 6.2 Reproducibility
-
-Processing results must be reproducible.
-
-Requirements:
-
-* pipeline version recorded
-* tool versions recorded
-* deterministic processing where possible
+`CFG-021` Config schema shall be versioned and validated in CI.
 
 ---
 
-## 6.3 Modularity
+# 7. Security and Privacy Requirements
 
-The system shall be composed of modular services.
+`SEC-001` Development zone must not mount production archive storage.
 
-Services may include:
+`SEC-002` Only `llm-gateway` may have outbound connectivity to model providers.
 
-* web interface
-* CV worker
-* OCR worker
-* metadata worker
-* export worker
-* AI gateway
+`SEC-003` Raw archive artifacts must remain local unless explicitly exported by user action.
 
-Each service must run independently.
+`SEC-004` Access to secrets must follow least privilege per service.
+
+`SEC-005` Logs must avoid secret leakage and should redact sensitive data.
 
 ---
 
-## 6.4 Containerization
+# 8. Non-Functional Requirements
 
-The system must support containerized deployment.
+`NFR-001` Local-first operation without inbound internet requirement.
 
-Preferred runtime:
+`NFR-002` Reproducibility via recorded pipeline/tool/config versions per job.
 
-* Podman
+`NFR-003` Service modularity with replaceable implementations behind stable contracts.
 
-Containers must support:
+`NFR-004` Deployability on both development workstation and Raspberry Pi with configuration changes only.
 
-* reproducible builds
-* configuration via environment variables
-
----
-
-## 6.5 Deployment Targets
-
-Supported environments:
-
-1. Development workstation (macOS / Linux)
-2. Raspberry Pi deployment (Linux ARM)
-
-Configuration differences must be handled via configuration files.
+`NFR-005` Testability of each service independently and as integrated pipeline.
 
 ---
 
-# 7. Trust Boundaries
+# 9. Acceptance Criteria (PoC)
 
-The system must define clear trust zones.
+PoC is acceptable when all criteria below pass:
 
-### Development Zone
-
-Contains:
-
-* source code
-* CI pipelines
-* OpenClaw integration
-
-### Processing Zone
-
-Contains:
-
-* pipeline services
-* job orchestration
-
-### Archive Zone
-
-Contains:
-
-* raw uploads
-* processed images
-* metadata artifacts
-
-### AI Gateway
-
-Contains:
-
-* outbound model requests
-
-Only the AI gateway may communicate with external model providers.
+1. Upload stores immutable raw files with checksums.
+2. CV processing produces rectified front artifact or explicit validation failure.
+3. OCR artifacts are generated for back/context images.
+4. Canonical metadata validates against documented schema.
+5. Review UI supports approve/edit with audit trail.
+6. Export artifacts include embedded metadata and sidecar JSON.
+7. Structured logs and key metrics are observable.
+8. Pipeline runs in containers on dev and Raspberry Pi targets.
+9. Configuration changes adjust behavior without code edits for supported knobs.
 
 ---
 
-# 8. Security Requirements
+# 10. Traceability to Other Documents
 
-1. No production archive access from development tooling.
-2. No external network access except AI gateway.
-3. Secrets must not be stored in repository.
-4. Environment variables must be used for secrets.
-5. Job-level debug bundles must be generated for issue investigation.
-
----
-
-# 9. Verification Requirements
-
-## 9.1 Static Code Checks
-
-Static checks must detect:
-
-* unused code
-* security vulnerabilities
-* dependency issues
-* formatting errors
-
-Tools may include:
-
-* Ruff
-* MyPy
-* Bandit
-* dependency scanners
-
----
-
-## 9.2 Dynamic Unit Tests
-
-Each service must provide unit tests covering:
-
-* input validation
-* processing logic
-* interface contracts
-
----
-
-## 9.3 Integration Tests
-
-Integration tests must verify:
-
-* service interaction
-* pipeline execution
-* artifact generation
-
----
-
-## 9.4 Deployment Tests
-
-Smoke tests must verify system behavior on:
-
-1. local development environment
-2. Raspberry Pi target environment
-
----
-
-# 10. Observability
-
-The system shall provide:
-
-* job dashboards
-* pipeline status
-* error reports
-* processing statistics
-
-All jobs must be traceable.
-
----
-
-# 11. Data Storage
-
-Data must be organized by job identifier.
-
-Example structure:
-
-```
-storage/
-jobs/<job_id>/
-inputs/
-derived/
-metadata/
-logs/
-```
-
-Raw inputs must never be modified.
-
----
-
-# 12. External Dependencies
-
-Potential external components:
-
-* OCR engines
-* language models
-* metadata tools
-
-These must be isolated behind defined interfaces.
-
----
-
-# 13. Documentation Requirements
-
-The repository must contain documentation for:
-
-* architecture
-* metadata schema
-* trust boundaries
-* testing strategy
-
-Documentation must be version controlled.
-
----
-
-# 14. Future Extensions (Non-PoC)
-
-Possible future features:
-
-* duplicate photo detection
-* clustering similar photos
-* improved handwriting recognition
-* timeline reconstruction
-* improved metadata inference
-* large archive scaling
-
-These are outside the PoC scope.
-
----
-
-# 15. Acceptance Criteria for PoC
-
-The PoC is considered successful if:
-
-1. photos can be uploaded
-2. image cropping works automatically
-3. OCR text extraction works
-4. metadata JSON is generated
-5. metadata review is possible
-6. export image contains metadata
-7. system runs in containers
-8. pipeline works on development workstation
-9. pipeline deploys on Raspberry Pi
-10. logging and metrics are visible
+- Architecture: `docs/architecture.md`
+- Metadata schema: `docs/metadata-schema.md`
+- Trust zones and policy: `docs/trust-boundaries.md`
+- Verification: `docs/test-strategy.md`
+- ADRs: `docs/adr/`
