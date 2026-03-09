@@ -1,0 +1,41 @@
+{
+  "storage": {
+    "root": "storage"
+  },
+  "upload": {
+    "allowed_image_formats": ["png"],
+    "min_longest_side_px": 1500
+  },
+  "cv": {
+    "engine": "opencv-poc-surrogate",
+    "min_short_side_px": 900,
+    "min_bytes": 256
+  },
+  "ocr": {
+    "engine": "deterministic-filename-ocr",
+    "language": "eng"
+  },
+  "metadata": {
+    "pipeline_version": "0.2.0",
+    "config_version": "rpi-2026-03-09",
+    "enable_llm_gateway": false,
+    "location_dictionary": {
+      "enschede": {
+        "name": "Enschede, Overijssel, Netherlands",
+        "country_code": "NL",
+        "lat": 52.2215,
+        "lon": 6.8937
+      }
+    }
+  },
+  "review": {
+    "auto_approve_min_confidence": 0.75
+  },
+  "export": {
+    "profile": "archive-default"
+  },
+  "queue": {
+    "db_path": "storage/runtime/jobs.sqlite3",
+    "max_retries": 2
+  }
+}

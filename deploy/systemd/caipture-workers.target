@@ -1,0 +1,3 @@
+[Unit]
+Description=Caipture Workers Target
+Requires=caipture-worker-cv.service caipture-worker-ocr.service caipture-worker-metadata.service caipture-worker-export.service
