@@ -256,3 +256,15 @@ PoC is acceptable when all criteria below pass:
 - Trust zones and policy: `docs/trust-boundaries.md`
 - Verification: `docs/test-strategy.md`
 - ADRs: `docs/adr/`
+
+---
+
+# 11. PoC Implementation Notes
+
+The current implementation profile intentionally prioritizes deterministic behavior:
+
+- default upload format in config is `png` (format list is configurable)
+- OCR/CV/LLM behavior is implemented with deterministic local surrogates
+- service and metadata contracts are stable so production engines can be swapped in later
+
+These notes are captured in ADR `docs/adr/0002-poc-runtime-stack.md`.

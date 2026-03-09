@@ -1,0 +1,65 @@
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["python", "services/web/server.py"]
+    environment:
+      - CAIPTURE_CONFIG=/app/deploy/configs/dev/config.json
+      - CAIPTURE_WEB_HOST=0.0.0.0
+      - CAIPTURE_WEB_PORT=8080
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../../storage:/app/storage
+
+  worker_cv:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["python", "services/worker-cv/main.py"]
+    environment:
+      - CAIPTURE_CONFIG=/app/deploy/configs/dev/config.json
+    volumes:
+      - ../../storage:/app/storage
+
+  worker_ocr:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["python", "services/worker-ocr/main.py"]
+    environment:
+      - CAIPTURE_CONFIG=/app/deploy/configs/dev/config.json
+    volumes:
+      - ../../storage:/app/storage
+
+  worker_metadata:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["python", "services/worker-metadata/main.py"]
+    environment:
+      - CAIPTURE_CONFIG=/app/deploy/configs/dev/config.json
+    volumes:
+      - ../../storage:/app/storage
+
+  worker_export:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["python", "services/worker-export/main.py"]
+    environment:
+      - CAIPTURE_CONFIG=/app/deploy/configs/dev/config.json
+    volumes:
+      - ../../storage:/app/storage
+
+  llm_gateway:
+    build:
+      context: ../..
+      dockerfile: Containerfile
+    command: ["python", "services/llm-gateway/main.py"]
+    environment:
+      - CAIPTURE_LLM_HOST=0.0.0.0
+      - CAIPTURE_LLM_PORT=8090
+    ports:
+      - "8090:8090"

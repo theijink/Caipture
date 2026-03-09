@@ -347,3 +347,5 @@ Differences between dev and rpi must be configuration-only.
 - exact review UX details
 
 These decisions must not violate the constraints and interfaces documented above.
+
+Current PoC implementation choices are documented in ADR `docs/adr/0002-poc-runtime-stack.md`.

@@ -1,155 +1,80 @@
 # Caipture
 
-Caipture is a self-hosted pipeline for digitizing historical photographs and reconstructing their context using computer vision, OCR, and AI-assisted metadata extraction.
+Caipture is a local-first, service-oriented pipeline for digitizing historical photographs and generating structured metadata with provenance and review support.
 
-The project is designed to convert physical photo collections into structured digital archive assets while preserving provenance, reproducibility, and privacy. Caipture processes images of photo prints and album pages, extracts contextual information (such as handwritten notes), and produces corrected images with structured metadata.
+## Implemented PoC Components
 
-The system is intended for personal archives, small heritage collections, and experimental AI-assisted digitization workflows.
+- `services/web`: JSON API for upload/status/review and one-shot processing trigger
+- `services/worker-cv`: validation + front-image derivative generation
+- `services/worker-ocr`: OCR artifact generation (deterministic PoC surrogate)
+- `services/worker-metadata`: canonical metadata generation and review decision
+- `services/worker-export`: export file + sidecar generation
+- `services/llm-gateway`: constrained model-gateway abstraction
+- `src/caipture`: shared contracts, queue, storage, pipeline logic
 
----
+## Configuration
 
-## Goals
+Runtime behavior is parameterized via JSON config files:
 
-- Digitize historical photographs with reproducible processing pipelines
-- Extract contextual metadata from handwritten notes and album captions
-- Preserve provenance and processing history
-- Maintain privacy by keeping raw archives local
-- Provide structured metadata suitable for archival standards
-- Enable automated processing while allowing human verification
+- `deploy/configs/dev/config.json`
+- `deploy/configs/rpi/config.json`
 
----
+Set config explicitly:
 
-## Core Pipeline
-
-A typical processing flow:
-
-1. **Upload**
-   - User uploads front and back images of a photograph
-   - Optional album or contextual images can be added
-
-2. **Image Processing**
-   - Detect photo boundaries
-   - Crop and rectify the image
-   - Produce an archival-quality output
-
-3. **Text Extraction**
-   - OCR on photo back or album pages
-   - Extract raw contextual text
-
-4. **Metadata Interpretation**
-   - Convert OCR output into structured metadata
-   - Estimate dates, locations, and subjects
-   - Track confidence and provenance
-
-5. **Review**
-   - Human validation of uncertain fields
-   - Corrections and annotations
-
-6. **Export**
-   - Final corrected image
-   - Embedded metadata (EXIF / IPTC / XMP)
-   - Structured sidecar JSON
-
----
-
-## Architecture Overview
-
-Caipture uses a modular architecture composed of containerized services.
-
-Typical components:
-
-- Web interface for upload and review
-- Image processing workers
-- OCR processing workers
-- Metadata interpretation services
-- Export and archival tools
-- AI gateway for external model access
-- Job queue and orchestration layer
-
-All services are containerized and designed to run locally.
-
----
-
-## Security Model
-
-Caipture separates responsibilities into trust zones:
-
-- **Development zone**
-  - Source code and CI pipelines
-  - OpenClaw or coding assistants operate here
-
-- **Processing zone**
-  - Image processing and metadata pipeline
-
-- **Archive zone**
-  - Raw uploads and processed images
-
-- **AI gateway**
-  - Controlled outbound access to language models
-
-Only minimal contextual data is sent to external AI services.
-
----
-
-## Repository Structure
-```
-caipture/
-├── docs/ # Design documents and architecture
-├── services/ # Individual service implementations
-├── tests/ # Unit and integration tests
-├── deploy/ # Container and deployment configuration
-├── scripts/ # Development and operational scripts
+```bash
+export CAIPTURE_CONFIG=deploy/configs/dev/config.json
 ```
 
-Detailed documentation is located in the `docs/` directory.
+## Local Run (without containers)
 
----
+Start all services:
 
-## Technology Stack
+```bash
+scripts/dev/start_all.sh
+```
 
-Planned core technologies:
+Stop all services:
 
-- Python
-- OpenCV
-- Tesseract OCR
-- FastAPI (web/API layer)
-- Podman containers
-- ExifTool for metadata writing
+```bash
+scripts/dev/stop_all.sh
+```
 
-Optional components:
+### Upload a job
 
-- Vision-language models
-- OpenClaw automation
-- GitHub CI/CD pipelines
+```bash
+PYTHONPATH=src python -m caipture.cli --config deploy/configs/dev/config.json \
+  upload --front /path/to/front.png --back /path/to/back.png
+```
 
----
+### One-shot pipeline execution
 
-## Development
+```bash
+scripts/dev/run_pipeline_once.sh
+```
 
-The project is designed to run in a containerized environment.
+### Approve review and export
 
-Local development should support both:
+```bash
+PYTHONPATH=src python -m caipture.cli --config deploy/configs/dev/config.json \
+  review-approve --job-id <job_id> --approved-by <name>
+PYTHONPATH=src python -m caipture.cli --config deploy/configs/dev/config.json run-export-once
+```
 
-- macOS (development workstation)
-- Linux (target deployment on Raspberry Pi)
+## Container Run (Podman Compose)
 
-All services should be configurable via environment variables.
+```bash
+scripts/dev/compose_up.sh
+scripts/dev/compose_down.sh
+```
 
----
+## Tests
 
-## License
+Run all unit + integration tests:
 
-Caipture is released under the **Apache License 2.0**.
+```bash
+scripts/test/run_all.sh
+```
 
----
+## Notes
 
-## Status
-
-Early design and proof-of-concept stage.
-
-Initial goals:
-
-- Define metadata schema
-- Implement minimal processing pipeline
-- Validate architecture on development environment
-- Deploy proof-of-concept on Raspberry Pi
+This PoC uses deterministic, local surrogate logic for CV/OCR/LLM behavior so tests are reproducible and do not require external dependencies.

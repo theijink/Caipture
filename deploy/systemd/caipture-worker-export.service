@@ -1,0 +1,13 @@
+[Unit]
+Description=Caipture Export Worker
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/caipture
+Environment=PYTHONPATH=/opt/caipture/src
+Environment=CAIPTURE_CONFIG=/opt/caipture/deploy/configs/rpi/config.json
+ExecStart=/usr/bin/python3 /opt/caipture/services/worker-export/main.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
