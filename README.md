@@ -52,12 +52,31 @@ Dashboard includes:
 - LLM usage since session start
 - process counts (running/finished/aborted/possible queue)
 - system load
+- per-service process load bars (CPU/RSS)
+- review queue with web approve actions
+- recent central journal actions
 
 Monitoring behavior is configurable via `monitoring` section in config:
 
 - `runtime_dir`
 - `llm_gateway_health_url`
 - `refresh_seconds`
+
+### Web Upload Flow
+
+Open `http://127.0.0.1:8080/` and use **Upload Via Web Page** form:
+
+1. Select front image and back image.
+2. Optionally add context images.
+3. Submit form.
+4. Approve `review_required` jobs from **Jobs Queue and Approval**.
+5. Track actions in **Recent Journal Actions**.
+
+### Central Journal (debug)
+
+All runtime actions are appended to:
+
+- `storage/runtime/journal.jsonl`
 
 ## Local Run (without containers)
 
@@ -117,4 +136,9 @@ scripts/test/run_bdd.sh
 
 ## Notes
 
-This PoC uses deterministic, local surrogate logic for CV/OCR/LLM behavior so tests are reproducible and do not require external provider dependencies.
+Current implementation details:
+
+- CV stage uses ImageMagick (`magick`) for auto-trim crop and resize.
+- OCR stage uses `tesseract` CLI (sidecar `.txt` remains supported for deterministic tests).
+- LLM gateway logic is enabled by default in config and contributes metadata descriptions.
+- Export stage writes contextual comment metadata and aligns output file timestamp to inferred historical date when available.

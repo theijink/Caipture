@@ -208,3 +208,6 @@ __marimo__/
 
 # Project runtime storage (local artifacts)
 /storage/
+
+# macOS
+.DS_Store

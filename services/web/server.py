@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -32,6 +34,25 @@ def _http_health(url: str, timeout_s: float = 1.0) -> str:
             return f"down_http_{response.status}"
     except urllib.error.URLError:
         return "down"
+
+
+def _pid_resource_usage(pid: int) -> dict[str, float | int | None]:
+    # macOS-compatible lightweight process stats.
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "%cpu=,rss="],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if not out:
+            return {"cpu_percent": None, "rss_kb": None}
+        parts = out.split()
+        if len(parts) < 2:
+            return {"cpu_percent": None, "rss_kb": None}
+        return {"cpu_percent": float(parts[0]), "rss_kb": int(parts[1])}
+    except Exception:
+        return {"cpu_percent": None, "rss_kb": None}
 
 
 def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
@@ -115,6 +136,12 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(size) if size else b"{}"
         return json.loads(raw.decode("utf-8"))
 
+    def _read_form(self) -> dict[str, str]:
+        size = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(size) if size else b""
+        parsed = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
+        return {k: v[0] for k, v in parsed.items() if v}
+
     def _monitoring_payload(self) -> dict:
         config = self.pipeline.config
         jobs = self.pipeline.queue.list_jobs()
@@ -139,20 +166,23 @@ class Handler(BaseHTTPRequestHandler):
             "worker_export": runtime_dir / "worker-export.pid",
             "llm_gateway": runtime_dir / "llm-gateway.pid",
         }
-        services = {}
+        services: dict[str, dict[str, Any]] = {}
+        process_metrics: dict[str, dict[str, float | int | None]] = {}
         for service_name, pidfile in service_pidfiles.items():
             if not pidfile.exists():
-                services[service_name] = "unknown"
+                services[service_name] = {"status": "unknown", "pid": None}
                 continue
             try:
                 pid = int(pidfile.read_text(encoding="utf-8").strip())
             except ValueError:
-                services[service_name] = "unknown"
+                services[service_name] = {"status": "unknown", "pid": None}
                 continue
-            services[service_name] = "running" if _is_pid_running(pid) else "stopped"
+            status = "running" if _is_pid_running(pid) else "stopped"
+            services[service_name] = {"status": status, "pid": pid}
+            process_metrics[service_name] = _pid_resource_usage(pid)
 
         llm_health_url = monitoring_cfg.get("llm_gateway_health_url", "http://127.0.0.1:8090/health")
-        services["llm_gateway_http"] = _http_health(llm_health_url)
+        services["llm_gateway_http"] = {"status": _http_health(llm_health_url), "pid": None}
 
         apps = {
             "queue_db": "up" if Path(config["queue"]["db_path"]).exists() else "down",
@@ -191,8 +221,10 @@ class Handler(BaseHTTPRequestHandler):
             "job_counts": status_counts,
             "processes": processes,
             "system_load": load,
+            "process_metrics": process_metrics,
             "stage_totals": metrics.get("stages", {}),
             "recent_actions": recent_actions,
+            "jobs": jobs,
         }
 
     def _render_bars(self, processes: dict[str, int]) -> str:
@@ -206,9 +238,27 @@ class Handler(BaseHTTPRequestHandler):
             )
         return "".join(bars)
 
+    def _render_process_load_bars(self, process_metrics: dict[str, dict[str, float | int | None]]) -> str:
+        cpu_values = [float(v.get("cpu_percent", 0.0) or 0.0) for v in process_metrics.values()]
+        max_cpu = max(1.0, max(cpu_values) if cpu_values else 1.0)
+        rows = []
+        for name, metric in process_metrics.items():
+            cpu = float(metric.get("cpu_percent", 0.0) or 0.0)
+            rss_mb = round(float(metric.get("rss_kb", 0) or 0) / 1024.0, 1)
+            width = int((cpu / max_cpu) * 100)
+            rows.append(
+                f"<div class='bar-row'><span>{name}</span><div class='bar'><div class='fill cpu' style='width:{width}%;'></div></div><strong>{cpu:.1f}% / {rss_mb:.1f}MB</strong></div>"
+            )
+        return "".join(rows) if rows else "<p>No running process metrics available.</p>"
+
     def _render_dashboard(self, payload: dict) -> str:
         refresh_s = int(self.pipeline.config.get("monitoring", {}).get("refresh_seconds", 5))
-        services_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["services"].items()])
+        services_rows = "".join(
+            [
+                f"<tr><td>{name}</td><td>{meta.get('status')}</td><td>{meta.get('pid') or '-'}</td><td><a href='/monitoring'>view</a></td></tr>"
+                for name, meta in payload["services"].items()
+            ]
+        )
         apps_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["applications"].items()])
         status_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["job_counts"].items()])
         stage_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["stage_totals"].items()])
@@ -218,6 +268,26 @@ class Handler(BaseHTTPRequestHandler):
                 for a in payload["recent_actions"][-15:]
             ]
         )
+        job_rows = []
+        for job in payload["jobs"][-25:]:
+            approve_html = ""
+            if job.get("status") == "review_required":
+                approve_html = (
+                    "<form action='/approve-web' method='post'>"
+                    f"<input type='hidden' name='job_id' value='{job.get('job_id')}' />"
+                    "<input type='hidden' name='approved_by' value='web-user' />"
+                    "<button type='submit'>Approve</button></form>"
+                )
+            job_rows.append(
+                "<tr>"
+                f"<td><a href='/jobs/{job.get('job_id')}'>{job.get('job_id')}</a></td>"
+                f"<td>{job.get('status')}</td>"
+                f"<td>{job.get('item_id')}</td>"
+                f"<td>{approve_html}</td>"
+                "</tr>"
+            )
+        jobs_table = "".join(job_rows) if job_rows else "<tr><td colspan='4'>No jobs yet</td></tr>"
+        proc_load = self._render_process_load_bars(payload.get("process_metrics", {}))
 
         return f"""<!doctype html>
 <html>
@@ -227,20 +297,29 @@ class Handler(BaseHTTPRequestHandler):
   <meta http-equiv=\"refresh\" content=\"{refresh_s}\" />
   <title>Caipture Control Center</title>
   <style>
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; background: #f5f8fb; color: #0f172a; }}
+    :root {{
+      --bg:#0b1020; --card:#141b33; --text:#e2e8f0; --muted:#94a3b8; --border:#334155;
+      --barbg:#1e293b; --accent1:#22d3ee; --accent2:#4ade80;
+    }}
+    @media (prefers-color-scheme: light) {{
+      :root {{ --bg:#f5f8fb; --card:#ffffff; --text:#0f172a; --muted:#334155; --border:#e2e8f0; --barbg:#e2e8f0; --accent1:#0ea5e9; --accent2:#22c55e; }}
+    }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; background: var(--bg); color: var(--text); }}
     h1 {{ margin: 0 0 8px; }}
-    .sub {{ color: #334155; margin-bottom: 14px; }}
+    .sub {{ color: var(--muted); margin-bottom: 14px; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 12px; }}
-    .card {{ background: white; border-radius: 10px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
+    .card {{ background: var(--card); border-radius: 10px; padding: 12px; border:1px solid var(--border); }}
     table {{ width: 100%; border-collapse: collapse; }}
-    td {{ border-bottom: 1px solid #e2e8f0; padding: 6px; vertical-align: top; }}
+    td {{ border-bottom: 1px solid var(--border); padding: 6px; vertical-align: top; }}
+    a {{ color: var(--accent1); }}
     .mono, code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
     .bar-row {{ display: grid; grid-template-columns: 120px 1fr 40px; gap: 8px; align-items: center; margin: 6px 0; }}
-    .bar {{ background: #e2e8f0; height: 12px; border-radius: 10px; overflow: hidden; }}
-    .fill {{ background: linear-gradient(90deg,#0ea5e9,#22c55e); height: 100%; }}
-    .actions {{ max-height: 280px; overflow: auto; }}
+    .bar {{ background: var(--barbg); height: 12px; border-radius: 10px; overflow: hidden; }}
+    .fill {{ background: linear-gradient(90deg,var(--accent1),var(--accent2)); height: 100%; }}
+    .fill.cpu {{ background: linear-gradient(90deg,#fb7185,#f59e0b); }}
+    .actions {{ max-height: 520px; overflow: auto; grid-column: span 2; }}
     form label {{ display: block; margin: 8px 0 2px; font-weight: 600; }}
-    input[type=file], input[type=text], button {{ width: 100%; padding: 8px; box-sizing: border-box; }}
+    input[type=file], input[type=text], button {{ width: 100%; padding: 8px; box-sizing: border-box; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); }}
     button {{ margin-top: 10px; background: #0f766e; color: white; border: 0; border-radius: 6px; cursor: pointer; }}
   </style>
 </head>
@@ -264,7 +343,7 @@ class Handler(BaseHTTPRequestHandler):
       </form>
     </div>
 
-    <div class=\"card\"><h3>Service Status</h3><table>{services_rows}</table></div>
+    <div class=\"card\"><h3>Service Status</h3><table><tr><td><strong>service</strong></td><td><strong>status</strong></td><td><strong>pid</strong></td><td><strong>link</strong></td></tr>{services_rows}</table></div>
     <div class=\"card\"><h3>Application Status</h3><table>{apps_rows}</table></div>
 
     <div class=\"card\"><h3>LLM Usage Since Session Start</h3>
@@ -274,9 +353,11 @@ class Handler(BaseHTTPRequestHandler):
     </div>
 
     <div class=\"card\"><h3>Process Overview</h3>{self._render_bars(payload['processes'])}</div>
+    <div class=\"card\"><h3>System Load per Relevant Process</h3>{proc_load}</div>
 
     <div class=\"card\"><h3>Job Status Counts</h3><table>{status_rows}</table></div>
     <div class=\"card\"><h3>Stage Totals</h3><table>{stage_rows}</table></div>
+    <div class=\"card\"><h3>Jobs Queue and Approval</h3><table><tr><td><strong>job_id</strong></td><td><strong>status</strong></td><td><strong>item</strong></td><td><strong>actions</strong></td></tr>{jobs_table}</table></div>
 
     <div class=\"card\"><h3>System Load</h3>
       <p>load1: {payload['system_load']['load1']}</p>
@@ -285,7 +366,7 @@ class Handler(BaseHTTPRequestHandler):
       <p>cpu_count: {payload['system_load']['cpu_count']}</p>
     </div>
 
-    <div class=\"card actions\"><h3>Recent Journal Actions</h3>
+    <div class=\"card actions\"><h3>Recent Journal Actions</h3><p><a href='/journal'>open full journal feed</a></p>
       <table>
         <tr><td><strong>timestamp</strong></td><td><strong>source</strong></td><td><strong>action</strong></td><td><strong>details</strong></td></tr>
         {action_rows}
@@ -303,6 +384,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/monitoring":
             self._json_response(HTTPStatus.OK, self._monitoring_payload())
+            return
+        if self.path == "/journal":
+            self._json_response(HTTPStatus.OK, {"entries": self._journal().tail(500)})
             return
         if self.path == "/":
             payload = self._monitoring_payload()
@@ -329,6 +413,20 @@ class Handler(BaseHTTPRequestHandler):
                     context_paths=body.get("context_paths", []),
                 )
                 self._json_response(HTTPStatus.CREATED, result)
+                return
+
+            if self.path == "/approve-web":
+                form = self._read_form()
+                job_id = form.get("job_id", "")
+                approved_by = form.get("approved_by", "web-user")
+                if not job_id:
+                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
+                    return
+                self.pipeline.apply_review(job_id, approved_by=approved_by, notes="approved via web")
+                self._html_response(
+                    HTTPStatus.OK,
+                    "<html><body><h2>Job approved</h2><p><a href='/'>Back to dashboard</a></p></body></html>",
+                )
                 return
 
             if self.path == "/upload-web":

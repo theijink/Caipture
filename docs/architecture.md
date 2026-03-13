@@ -42,6 +42,7 @@ Responsibilities:
 - review UI/API
 - status and metrics API
 - export trigger/download
+- operator dashboard (including queue approval actions and journal visibility)
 
 Must not:
 
@@ -53,8 +54,8 @@ Must not:
 Responsibilities:
 
 - quality validation
-- boundary detection
-- crop, rectify, orientation normalization
+- boundary-aware trim/crop
+- resize/normalize output image
 - artifact emission and event updates
 
 ## 3.3 `services/worker-ocr`
@@ -339,6 +340,7 @@ Differences between dev and rpi must be configuration-only.
 3. Keep workers idempotent using job+stage execution guards.
 4. Build contract tests around event/state/artifact contracts before scaling features.
 5. Treat `docs/metadata-schema.md` as normative for metadata structure.
+6. CV/OCR adapter implementations may be tool-backed (for example ImageMagick and Tesseract CLI), but must preserve service contracts.
 
 ---
 

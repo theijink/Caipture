@@ -171,6 +171,10 @@ failed
 `FR-072` Per-job debug bundle generation shall be supported via scriptable command.
 `FR-073` Web service shall expose an operator monitoring view containing service status, application status, process counts, LLM usage since session start, and system load.
 `FR-074` System shall maintain a central append-only runtime journal file for debugging actions across web and queue/pipeline operations.
+`FR-075` Web interface shall support approving review-required jobs without using CLI commands.
+`FR-076` CV stage shall crop and resize front-image content into derived output artifacts.
+`FR-077` OCR stage shall execute OCR on back/context images and persist extracted text artifacts.
+`FR-078` Export stage shall include inferred historical date/location/context fields in export metadata mapping and file metadata where supported.
 
 ---
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -85,8 +86,7 @@ class Pipeline:
 
                 rectified = derived_dir / "front_rectified.png"
                 cropped = derived_dir / "front_cropped.png"
-                shutil.copy2(front_abs, rectified)
-                shutil.copy2(front_abs, cropped)
+                self._run_cv_transform(front_abs, cropped, rectified)
                 write_json(
                     derived_dir / "validation_report.json",
                     {"issues": [], "status": "ok", "generated": ["derived/front_cropped.png", "derived/front_rectified.png"]},
@@ -109,9 +109,12 @@ class Pipeline:
             try:
                 derived_dir = self.storage.job_dir(job_id) / "derived"
                 text_parts = []
+                confs: list[float] = []
                 for rel in [job["back_input"], *job["context_inputs"]]:
                     p = self.storage.job_dir(job_id) / rel
-                    text_parts.append(self._extract_ocr_text(p))
+                    text, conf = self._extract_ocr_text(p)
+                    text_parts.append(text)
+                    confs.append(conf)
 
                 back_text = text_parts[0] if text_parts else ""
                 context_text = "\n".join(text_parts[1:])
@@ -120,8 +123,8 @@ class Pipeline:
                 write_json(
                     derived_dir / "ocr_report.json",
                     {
-                        "back_confidence": self._confidence_for_text(back_text),
-                        "context_confidence": self._confidence_for_text(context_text),
+                        "back_confidence": confs[0] if confs else self._confidence_for_text(back_text),
+                        "context_confidence": (sum(confs[1:]) / len(confs[1:])) if len(confs) > 1 else self._confidence_for_text(context_text),
                     },
                 )
                 self.queue.update_flags(job_id, ocr_done=True)
@@ -147,6 +150,7 @@ class Pipeline:
 
                 date_obj = self._infer_date(merged_text)
                 location_obj = self._infer_location(merged_text)
+                people_obj = self._infer_people(merged_text)
                 llm_summary = self.llm.summarize_context(merged_text)
                 self.metrics.increment("llm_requests_total")
                 if bool(llm_summary.get("used_provider", False)):
@@ -183,10 +187,10 @@ class Pipeline:
                     "historical_metadata": {
                         "date": date_obj,
                         "location": location_obj,
-                        "people": [],
+                        "people": people_obj,
                         "description": {
-                            "text": llm_summary["description"],
-                            "confidence": llm_summary["confidence"],
+                            "text": llm_summary["description"] or self._infer_description(merged_text, people_obj, location_obj),
+                            "confidence": llm_summary["confidence"] if llm_summary["description"] else 0.6,
                             "sources": [
                                 {
                                     "source_type": "llm_inference",
@@ -268,9 +272,11 @@ class Pipeline:
                 mapping = {
                     "exif": {
                         "DateTimeDigitized": doc["digitization_metadata"]["digitized_at"],
+                        "DateTimeOriginal": doc.get("historical_metadata", {}).get("date", {}).get("from", ""),
                     },
                     "iptc": {
                         "CaptionAbstract": doc.get("historical_metadata", {}).get("description", {}).get("text", ""),
+                        "City": doc.get("historical_metadata", {}).get("location", {}).get("normalized", {}).get("name", ""),
                     },
                     "xmp": {
                         "caipture:ItemId": doc["item_id"],
@@ -279,6 +285,9 @@ class Pipeline:
                     "exported_at": utc_now_iso(),
                     "export_profile": self.config["export"]["profile"],
                 }
+                comment = self._build_export_comment(doc)
+                self._apply_export_metadata(out_image, comment)
+                self._set_export_timestamp_from_metadata(out_image, doc)
                 doc["export_mapping"] = mapping
                 doc["updated_at"] = utc_now_iso()
                 write_json(metadata_path, doc)
@@ -331,14 +340,49 @@ class Pipeline:
 
         return issues
 
-    def _extract_ocr_text(self, path: Path) -> str:
-        # PoC deterministic OCR surrogate: derive text from filename and optional sidecar .txt.
+    def _extract_ocr_text(self, path: Path) -> tuple[str, float]:
+        # Prefer deterministic sidecar for tests/debug, then fallback to OCR engine.
         sidecar = path.with_suffix(".txt")
         if sidecar.exists():
-            return sidecar.read_text(encoding="utf-8")
+            text = sidecar.read_text(encoding="utf-8")
+            return text, self._confidence_for_text(text)
 
-        base = path.stem.replace("_", " ").replace("-", " ")
-        return base.strip()
+        lang = str(self.config["ocr"].get("language", "eng"))
+        psm = str(self.config["ocr"].get("psm", 6))
+        ocr_cmd = ["tesseract", str(path), "stdout", "-l", lang, "--psm", psm]
+        try:
+            out = subprocess.run(ocr_cmd, capture_output=True, text=True, check=True)
+            text = out.stdout.strip()
+        except Exception:
+            base = path.stem.replace("_", " ").replace("-", " ")
+            text = base.strip()
+            return text, self._confidence_for_text(text)
+
+        # Use TSV for confidence where possible.
+        conf = self._confidence_for_text(text)
+        try:
+            tsv = subprocess.run(
+                ["tesseract", str(path), "stdout", "-l", lang, "--psm", psm, "tsv"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            vals: list[float] = []
+            for line in tsv.splitlines()[1:]:
+                parts = line.split("\t")
+                if len(parts) < 11:
+                    continue
+                try:
+                    c = float(parts[10])
+                except ValueError:
+                    continue
+                if c >= 0.0:
+                    vals.append(c / 100.0)
+            if vals:
+                conf = max(0.0, min(1.0, sum(vals) / len(vals)))
+        except Exception:
+            pass
+        return text, conf
 
     def _confidence_for_text(self, text: str) -> float:
         if not text.strip():
@@ -396,9 +440,128 @@ class Pipeline:
             ],
         }
 
+    def _infer_people(self, text: str) -> list[dict[str, Any]]:
+        people: list[dict[str, Any]] = []
+        for match in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", text):
+            name = match.group(1).strip()
+            if name.lower() in {"Summer"}:
+                continue
+            people.append(
+                {
+                    "name": name,
+                    "role": "possible_subject",
+                    "confidence": 0.55,
+                    "sources": [
+                        {
+                            "source_type": "ocr_text",
+                            "source_ref": "derived/back_ocr.txt",
+                            "excerpt": name,
+                        }
+                    ],
+                }
+            )
+        # Deduplicate by name.
+        seen = set()
+        uniq = []
+        for p in people:
+            n = p["name"]
+            if n in seen:
+                continue
+            seen.add(n)
+            uniq.append(p)
+        return uniq[:10]
+
+    def _infer_description(self, text: str, people: list[dict[str, Any]], location: dict[str, Any] | None) -> str:
+        bits = []
+        if people:
+            bits.append("People: " + ", ".join([p["name"] for p in people[:3]]))
+        loc = (location or {}).get("normalized", {}).get("name", "")
+        if loc:
+            bits.append("Location: " + loc)
+        if text:
+            bits.append("Context: " + " ".join(text.split()[:25]))
+        return " | ".join(bits) if bits else "Historical photograph."
+
     def _file_ref_dict(self, abs_path: Path, rel_path: str) -> dict[str, Any]:
         return {
             "path": rel_path,
             "sha256": sha256_file(abs_path),
             "bytes": abs_path.stat().st_size,
         }
+
+    def _run_cv_transform(self, input_path: Path, cropped_path: Path, rectified_path: Path) -> None:
+        fuzz = str(self.config["cv"].get("trim_fuzz_percent", 10))
+        target = str(self.config["cv"].get("target_size", "1600x1200"))
+        cmd_crop = [
+            "magick",
+            str(input_path),
+            "-auto-orient",
+            "-fuzz",
+            f"{fuzz}%",
+            "-trim",
+            "+repage",
+            str(cropped_path),
+        ]
+        cmd_rect = [
+            "magick",
+            str(cropped_path),
+            "-resize",
+            f"{target}>",
+            str(rectified_path),
+        ]
+        try:
+            subprocess.run(cmd_crop, check=True, capture_output=True, text=True)
+            subprocess.run(cmd_rect, check=True, capture_output=True, text=True)
+        except Exception:
+            # Fallback keeps pipeline running but still produces artifacts.
+            shutil.copy2(input_path, cropped_path)
+            shutil.copy2(input_path, rectified_path)
+
+    def _build_export_comment(self, doc: dict[str, Any]) -> str:
+        hist = doc.get("historical_metadata", {})
+        parts = []
+        date_from = hist.get("date", {}).get("from")
+        if date_from:
+            parts.append(f"date={date_from}")
+        loc = hist.get("location", {}).get("normalized", {}).get("name", "")
+        if loc:
+            parts.append(f"location={loc}")
+        desc = hist.get("description", {}).get("text", "")
+        if desc:
+            parts.append(f"description={desc}")
+        people = [p.get("name", "") for p in hist.get("people", []) if p.get("name")]
+        if people:
+            parts.append("people=" + ", ".join(people))
+        return " | ".join(parts)
+
+    def _apply_export_metadata(self, image_path: Path, comment: str) -> None:
+        if not comment:
+            return
+        try:
+            tmp = image_path.with_name(image_path.stem + "_meta" + image_path.suffix)
+            subprocess.run(
+                ["magick", str(image_path), "-set", "comment", comment, str(tmp)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            tmp.replace(image_path)
+        except Exception:
+            return
+
+    def _set_export_timestamp_from_metadata(self, image_path: Path, doc: dict[str, Any]) -> None:
+        raw = doc.get("historical_metadata", {}).get("date", {}).get("from")
+        if not raw:
+            return
+        try:
+            from datetime import datetime
+
+            dt = datetime.fromisoformat(raw)
+            ts = dt.timestamp()
+            image_path.touch(exist_ok=True)
+            image_path.chmod(0o644)
+            import os
+
+            os.utime(image_path, (ts, ts))
+        except Exception:
+            return

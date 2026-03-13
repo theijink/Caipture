@@ -18,16 +18,19 @@
   "cv": {
     "engine": "opencv-poc-surrogate",
     "min_short_side_px": 900,
-    "min_bytes": 256
+    "min_bytes": 256,
+    "trim_fuzz_percent": 10,
+    "target_size": "1600x1200"
   },
   "ocr": {
     "engine": "deterministic-filename-ocr",
-    "language": "eng"
+    "language": "eng",
+    "psm": 6
   },
   "metadata": {
     "pipeline_version": "0.2.0",
     "config_version": "rpi-2026-03-13",
-    "enable_llm_gateway": false,
+    "enable_llm_gateway": true,
     "location_dictionary": {
       "enschede": {
         "name": "Enschede, Overijssel, Netherlands",
