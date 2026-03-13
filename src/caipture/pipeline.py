@@ -10,6 +10,7 @@ from caipture.llm_gateway import LlmGateway
 from caipture.metadata import validate_metadata_document
 from caipture.models import JobStatus, ReviewStatus
 from caipture.queue import JobQueue
+from caipture.session_metrics import SessionMetrics
 from caipture.store import Storage
 from caipture.utils import image_dimensions, read_json, sha256_file, utc_now_iso, write_json
 
@@ -21,6 +22,8 @@ class Pipeline:
         self.storage.init_layout()
         self.queue = JobQueue(Path(self.config["queue"]["db_path"]))
         self.llm = LlmGateway(enabled=bool(self.config["metadata"].get("enable_llm_gateway", False)))
+        runtime_dir = Path(self.config.get("monitoring", {}).get("runtime_dir", Path(self.config["storage"]["root"]) / "runtime"))
+        self.metrics = SessionMetrics(runtime_dir / "session_metrics.json")
 
     def create_job(self, front_path: str, back_path: str, context_paths: list[str] | None = None) -> dict[str, Any]:
         context_paths = context_paths or []
@@ -90,6 +93,7 @@ class Pipeline:
                 )
                 self.queue.update_flags(job_id, cv_done=True)
                 self.queue.add_event(job_id, "cv", "succeeded", {"rectified": "derived/front_rectified.png"})
+                self.metrics.increment_stage("cv")
             except Exception as exc:  # pragma: no cover
                 self.queue.set_status(job_id, JobStatus.FAILED, "cv_error", str(exc))
                 self.queue.add_event(job_id, "cv", "failed", {"error": str(exc)})
@@ -122,6 +126,7 @@ class Pipeline:
                 )
                 self.queue.update_flags(job_id, ocr_done=True)
                 self.queue.add_event(job_id, "ocr", "succeeded", {})
+                self.metrics.increment_stage("ocr")
             except Exception as exc:  # pragma: no cover
                 self.queue.set_status(job_id, JobStatus.FAILED, "ocr_error", str(exc))
                 self.queue.add_event(job_id, "ocr", "failed", {"error": str(exc)})
@@ -143,6 +148,9 @@ class Pipeline:
                 date_obj = self._infer_date(merged_text)
                 location_obj = self._infer_location(merged_text)
                 llm_summary = self.llm.summarize_context(merged_text)
+                self.metrics.increment("llm_requests_total")
+                if bool(llm_summary.get("used_provider", False)):
+                    self.metrics.increment("llm_enabled_requests")
 
                 review_threshold = float(self.config["review"]["auto_approve_min_confidence"])
                 low_confidence = []
@@ -217,6 +225,7 @@ class Pipeline:
                 if not review_required:
                     self.queue.update_flags(job_id, review_done=True)
                 self.queue.add_event(job_id, "metadata", "succeeded", {"review_required": review_required})
+                self.metrics.increment_stage("metadata")
             except Exception as exc:  # pragma: no cover
                 self.queue.set_status(job_id, JobStatus.FAILED, "metadata_error", str(exc))
                 self.queue.add_event(job_id, "metadata", "failed", {"error": str(exc)})
@@ -278,6 +287,7 @@ class Pipeline:
                 self.queue.update_flags(job_id, export_done=True)
                 self.queue.set_status(job_id, JobStatus.COMPLETED)
                 self.queue.add_event(job_id, "export", "succeeded", {"path": "exports/photo_export.png"})
+                self.metrics.increment_stage("export")
             except Exception as exc:  # pragma: no cover
                 self.queue.set_status(job_id, JobStatus.FAILED, "export_error", str(exc))
                 self.queue.add_event(job_id, "export", "failed", {"error": str(exc)})

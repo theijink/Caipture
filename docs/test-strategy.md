@@ -81,6 +81,17 @@ Assertions:
 - one fixture job fully processes
 - export artifact exists
 
+## 2.4 BDD Integration Tests (`tests/bdd/`)
+
+Scope:
+
+- behavior-driven end-to-end workflow verification using Gherkin feature files
+- user-visible process semantics (upload, process, review, export, failure handling)
+
+Execution:
+
+- `python3 -m behave tests/bdd/features`
+
 ---
 
 # 3. Test Data Strategy

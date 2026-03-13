@@ -308,6 +308,8 @@ Required metrics:
 
 Each service should expose health endpoints for liveness/readiness.
 
+Web service should also expose a monitoring dashboard/API aggregating service health, application status, queue/process counts, LLM usage counters, and system load.
+
 ---
 
 # 11. Deployment Architecture

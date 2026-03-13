@@ -1,4 +1,13 @@
 {
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "monitoring": {
+    "runtime_dir": "storage/runtime",
+    "llm_gateway_health_url": "http://127.0.0.1:8090/health",
+    "refresh_seconds": 10
+  },
   "storage": {
     "root": "storage"
   },
@@ -17,7 +26,7 @@
   },
   "metadata": {
     "pipeline_version": "0.2.0",
-    "config_version": "rpi-2026-03-09",
+    "config_version": "rpi-2026-03-13",
     "enable_llm_gateway": false,
     "location_dictionary": {
       "enschede": {
