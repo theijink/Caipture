@@ -44,6 +44,44 @@ def detect_png_size(path: Path) -> tuple[int, int] | None:
         return int(width), int(height)
 
 
+def detect_jpeg_size(path: Path) -> tuple[int, int] | None:
+    with path.open("rb") as handle:
+        data = handle.read(2)
+        if data != b"\xff\xd8":
+            return None
+
+        while True:
+            marker_start = handle.read(1)
+            if not marker_start:
+                return None
+            if marker_start != b"\xff":
+                continue
+            marker = handle.read(1)
+            if not marker:
+                return None
+            if marker in {b"\xd8", b"\xd9"}:
+                continue
+            length_raw = handle.read(2)
+            if len(length_raw) != 2:
+                return None
+            length = struct.unpack(">H", length_raw)[0]
+            if length < 2:
+                return None
+            if marker in {b"\xc0", b"\xc1", b"\xc2", b"\xc3", b"\xc5", b"\xc6", b"\xc7", b"\xc9", b"\xca", b"\xcb", b"\xcd", b"\xce", b"\xcf"}:
+                precision = handle.read(1)
+                if not precision:
+                    return None
+                size_raw = handle.read(4)
+                if len(size_raw) != 4:
+                    return None
+                height, width = struct.unpack(">HH", size_raw)
+                return int(width), int(height)
+            handle.seek(length - 2, 1)
+
+
 def image_dimensions(path: Path) -> tuple[int, int] | None:
-    # PoC parser intentionally supports PNG for deterministic test fixtures.
-    return detect_png_size(path)
+    # PoC parser supports PNG and JPEG by file signature.
+    png = detect_png_size(path)
+    if png:
+        return png
+    return detect_jpeg_size(path)

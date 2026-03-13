@@ -23,3 +23,12 @@ Feature: End-to-end processing pipeline
     When I run the OCR and metadata workers once
     Then no OCR jobs should be processed
     And no metadata jobs should be processed
+
+  Scenario: Web page upload flow with fixture files
+    Given a temporary Caipture test environment
+    And the web server is started for browser testing
+    When I open the browser page "/"
+    Then the page should contain "Caipture Control Center"
+    When I upload fixture files through the web page form
+    Then a job should be created from web upload
+    And the central journal should contain web upload actions

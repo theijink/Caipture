@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
+from caipture.journal import Journal
 from caipture.pipeline import Pipeline
 
 
@@ -30,8 +34,65 @@ def _http_health(url: str, timeout_s: float = 1.0) -> str:
         return "down"
 
 
+def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+    boundary_match = re.search(r"boundary=([^;]+)", content_type)
+    if not boundary_match:
+        raise ValueError("multipart boundary missing")
+    boundary = boundary_match.group(1).strip().strip('"').encode("utf-8")
+    delimiter = b"--" + boundary
+    fields: dict[str, str] = {}
+    files: dict[str, list[dict[str, Any]]] = {}
+
+    for raw_part in body.split(delimiter):
+        part = raw_part.strip(b"\r\n")
+        if not part or part == b"--":
+            continue
+
+        header_blob, sep, content = part.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        content = content.rstrip(b"\r\n")
+
+        headers: dict[str, str] = {}
+        for line in header_blob.decode("utf-8", errors="replace").split("\r\n"):
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+
+        disposition = headers.get("content-disposition", "")
+        name_match = re.search(r'name="([^"]+)"', disposition)
+        if not name_match:
+            continue
+        field_name = name_match.group(1)
+
+        filename_match = re.search(r'filename="([^"]*)"', disposition)
+        if filename_match:
+            filename = Path(filename_match.group(1)).name
+            files.setdefault(field_name, []).append(
+                {
+                    "filename": filename,
+                    "content_type": headers.get("content-type", "application/octet-stream"),
+                    "content": content,
+                }
+            )
+        else:
+            fields[field_name] = content.decode("utf-8", errors="replace")
+
+    return fields, files
+
+
 class Handler(BaseHTTPRequestHandler):
     pipeline = Pipeline(os.getenv("CAIPTURE_CONFIG"))
+
+    def _runtime_dir(self) -> Path:
+        cfg = self.pipeline.config
+        return Path(cfg.get("monitoring", {}).get("runtime_dir", Path(cfg["storage"]["root"]) / "runtime"))
+
+    def _journal(self) -> Journal:
+        return Journal(self._runtime_dir() / "journal.jsonl")
+
+    def _log_action(self, action: str, details: dict[str, Any] | None = None) -> None:
+        self._journal().log("web", action, details or {})
 
     def _json_response(self, status: int, body: dict) -> None:
         payload = json.dumps(body).encode("utf-8")
@@ -69,7 +130,7 @@ class Handler(BaseHTTPRequestHandler):
         }
 
         monitoring_cfg = config.get("monitoring", {})
-        runtime_dir = Path(monitoring_cfg.get("runtime_dir", Path(config["storage"]["root"]) / "runtime"))
+        runtime_dir = self._runtime_dir()
         service_pidfiles = {
             "web": runtime_dir / "web.pid",
             "worker_cv": runtime_dir / "worker-cv.pid",
@@ -116,6 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             }
 
         metrics = self.pipeline.metrics.snapshot()
+        recent_actions = self._journal().tail(25)
 
         return {
             "timestamp": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -130,7 +192,19 @@ class Handler(BaseHTTPRequestHandler):
             "processes": processes,
             "system_load": load,
             "stage_totals": metrics.get("stages", {}),
+            "recent_actions": recent_actions,
         }
+
+    def _render_bars(self, processes: dict[str, int]) -> str:
+        max_val = max(1, max(processes.values()))
+        bars = []
+        for key in ["running", "finished", "aborted", "possible_queue"]:
+            value = int(processes.get(key, 0))
+            width = int((value / max_val) * 100)
+            bars.append(
+                f"<div class='bar-row'><span>{key}</span><div class='bar'><div class='fill' style='width:{width}%;'></div></div><strong>{value}</strong></div>"
+            )
+        return "".join(bars)
 
     def _render_dashboard(self, payload: dict) -> str:
         refresh_s = int(self.pipeline.config.get("monitoring", {}).get("refresh_seconds", 5))
@@ -138,6 +212,12 @@ class Handler(BaseHTTPRequestHandler):
         apps_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["applications"].items()])
         status_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["job_counts"].items()])
         stage_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["stage_totals"].items()])
+        action_rows = "".join(
+            [
+                f"<tr><td>{a.get('timestamp')}</td><td>{a.get('source')}</td><td>{a.get('action')}</td><td><code>{json.dumps(a.get('details', {}))}</code></td></tr>"
+                for a in payload["recent_actions"][-15:]
+            ]
+        )
 
         return f"""<!doctype html>
 <html>
@@ -145,41 +225,71 @@ class Handler(BaseHTTPRequestHandler):
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <meta http-equiv=\"refresh\" content=\"{refresh_s}\" />
-  <title>Caipture Monitoring</title>
+  <title>Caipture Control Center</title>
   <style>
-    body {{ font-family: sans-serif; margin: 24px; background: #f7f7f7; color: #111; }}
-    h1 {{ margin-bottom: 8px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 12px; }}
-    .card {{ background: white; border-radius: 8px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; background: #f5f8fb; color: #0f172a; }}
+    h1 {{ margin: 0 0 8px; }}
+    .sub {{ color: #334155; margin-bottom: 14px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 12px; }}
+    .card {{ background: white; border-radius: 10px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }}
     table {{ width: 100%; border-collapse: collapse; }}
-    td {{ border-bottom: 1px solid #eee; padding: 6px; }}
-    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    td {{ border-bottom: 1px solid #e2e8f0; padding: 6px; vertical-align: top; }}
+    .mono, code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
+    .bar-row {{ display: grid; grid-template-columns: 120px 1fr 40px; gap: 8px; align-items: center; margin: 6px 0; }}
+    .bar {{ background: #e2e8f0; height: 12px; border-radius: 10px; overflow: hidden; }}
+    .fill {{ background: linear-gradient(90deg,#0ea5e9,#22c55e); height: 100%; }}
+    .actions {{ max-height: 280px; overflow: auto; }}
+    form label {{ display: block; margin: 8px 0 2px; font-weight: 600; }}
+    input[type=file], input[type=text], button {{ width: 100%; padding: 8px; box-sizing: border-box; }}
+    button {{ margin-top: 10px; background: #0f766e; color: white; border: 0; border-radius: 6px; cursor: pointer; }}
   </style>
 </head>
 <body>
-  <h1>Caipture Monitoring</h1>
-  <p class=\"mono\">Updated: {payload['timestamp']}</p>
+  <h1>Caipture Control Center</h1>
+  <div class=\"sub\">Updated: <span class=\"mono\">{payload['timestamp']}</span></div>
+
   <div class=\"grid\">
+    <div class=\"card\">
+      <h3>Upload Via Web Page</h3>
+      <form action=\"/upload-web\" method=\"post\" enctype=\"multipart/form-data\">
+        <label>Front image</label>
+        <input type=\"file\" name=\"front_file\" required />
+        <label>Back image</label>
+        <input type=\"file\" name=\"back_file\" required />
+        <label>Context images (optional)</label>
+        <input type=\"file\" name=\"context_files\" multiple />
+        <label>Auto run pipeline once after upload</label>
+        <input type=\"text\" name=\"auto_run\" value=\"true\" />
+        <button type=\"submit\">Upload Job</button>
+      </form>
+    </div>
+
     <div class=\"card\"><h3>Service Status</h3><table>{services_rows}</table></div>
     <div class=\"card\"><h3>Application Status</h3><table>{apps_rows}</table></div>
+
     <div class=\"card\"><h3>LLM Usage Since Session Start</h3>
       <p>Started: <span class=\"mono\">{payload['llm_usage_since_start']['started_at']}</span></p>
       <p>Requests: <strong>{payload['llm_usage_since_start']['requests_total']}</strong></p>
       <p>Provider calls: <strong>{payload['llm_usage_since_start']['provider_calls']}</strong></p>
     </div>
-    <div class=\"card\"><h3>Processes</h3>
-      <p>Running: <strong>{payload['processes']['running']}</strong></p>
-      <p>Finished: <strong>{payload['processes']['finished']}</strong></p>
-      <p>Aborted: <strong>{payload['processes']['aborted']}</strong></p>
-      <p>Possible queue: <strong>{payload['processes']['possible_queue']}</strong></p>
-    </div>
+
+    <div class=\"card\"><h3>Process Overview</h3>{self._render_bars(payload['processes'])}</div>
+
     <div class=\"card\"><h3>Job Status Counts</h3><table>{status_rows}</table></div>
     <div class=\"card\"><h3>Stage Totals</h3><table>{stage_rows}</table></div>
+
     <div class=\"card\"><h3>System Load</h3>
       <p>load1: {payload['system_load']['load1']}</p>
       <p>load5: {payload['system_load']['load5']}</p>
       <p>load15: {payload['system_load']['load15']}</p>
       <p>cpu_count: {payload['system_load']['cpu_count']}</p>
+    </div>
+
+    <div class=\"card actions\"><h3>Recent Journal Actions</h3>
+      <table>
+        <tr><td><strong>timestamp</strong></td><td><strong>source</strong></td><td><strong>action</strong></td><td><strong>details</strong></td></tr>
+        {action_rows}
+      </table>
     </div>
   </div>
 </body>
@@ -187,6 +297,7 @@ class Handler(BaseHTTPRequestHandler):
 """
 
     def do_GET(self) -> None:  # noqa: N802
+        self._log_action("http_get", {"path": self.path})
         if self.path == "/health":
             self._json_response(HTTPStatus.OK, {"status": "ok"})
             return
@@ -208,6 +319,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        self._log_action("http_post", {"path": self.path})
         try:
             if self.path == "/upload":
                 body = self._read_json()
@@ -218,9 +330,55 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self._json_response(HTTPStatus.CREATED, result)
                 return
-            if self.path == "/run-all-once":
-                self._json_response(HTTPStatus.OK, self.pipeline.run_all_once())
+
+            if self.path == "/upload-web":
+                content_type = self.headers.get("Content-Type", "")
+                length = int(self.headers.get("Content-Length", "0"))
+                body_raw = self.rfile.read(length)
+                fields, files = _parse_multipart_form(content_type, body_raw)
+                if "front_file" not in files or "back_file" not in files:
+                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": "front_file and back_file are required"})
+                    return
+
+                runtime_upload_dir = self._runtime_dir() / "web_uploads"
+                runtime_upload_dir.mkdir(parents=True, exist_ok=True)
+
+                def _save_file(file_item: dict[str, Any], prefix: str) -> Path:
+                    suffix = Path(file_item["filename"] or "upload.bin").suffix or ".bin"
+                    fd, tmp_path = tempfile.mkstemp(prefix=f"{prefix}_", suffix=suffix, dir=runtime_upload_dir)
+                    os.close(fd)
+                    p = Path(tmp_path)
+                    p.write_bytes(file_item["content"])
+                    return p
+
+                front_path = _save_file(files["front_file"][0], "front")
+                back_path = _save_file(files["back_file"][0], "back")
+                context_paths = []
+                for idx, c in enumerate(files.get("context_files", []), start=1):
+                    context_paths.append(str(_save_file(c, f"context_{idx:03d}")))
+
+                result = self.pipeline.create_job(str(front_path), str(back_path), context_paths)
+
+                auto_run = fields.get("auto_run", "true").strip().lower() in {"1", "true", "yes", "y"}
+                if auto_run:
+                    run = self.pipeline.run_all_once()
+                    self._log_action("web_upload_auto_run", {"job_id": result["job_id"], "run": run})
+
+                html = (
+                    "<html><body>"
+                    f"<h2>Upload successful</h2><p>job_id: <code>{result['job_id']}</code></p>"
+                    "<p><a href='/'>Back to dashboard</a></p>"
+                    f"<p><a href='/jobs/{result['job_id']}'>View job JSON</a></p>"
+                    "</body></html>"
+                )
+                self._html_response(HTTPStatus.CREATED, html)
                 return
+
+            if self.path == "/run-all-once":
+                result = self.pipeline.run_all_once()
+                self._json_response(HTTPStatus.OK, result)
+                return
+
             if self.path.startswith("/review/"):
                 job_id = self.path.split("/review/", 1)[1]
                 body = self._read_json()
@@ -228,6 +386,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json_response(HTTPStatus.OK, {"ok": True})
                 return
         except Exception as exc:  # pragma: no cover
+            self._log_action("http_error", {"path": self.path, "error": str(exc)})
             self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
         self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -239,6 +398,9 @@ def main() -> None:
     port = int(os.getenv("CAIPTURE_WEB_PORT", str(pipeline.config.get("web", {}).get("port", 8080))))
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"web listening on {host}:{port}")
+    Journal(Path(pipeline.config.get("monitoring", {}).get("runtime_dir", "storage/runtime")) / "journal.jsonl").log(
+        "web", "startup", {"host": host, "port": port}
+    )
     server.serve_forever()
 
 

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from uuid import uuid4
 
 from behave import given, then, when
 
 from caipture.pipeline import Pipeline
+from services.web.server import Handler
 from tests.test_utils import make_png
 
 
@@ -19,7 +24,7 @@ def _make_config(root: Path, cv_min_bytes: int) -> Path:
             "refresh_seconds": 1,
         },
         "storage": {"root": str(root / "storage")},
-        "upload": {"allowed_image_formats": ["png"], "min_longest_side_px": 1500},
+        "upload": {"allowed_image_formats": ["png", "jpg", "jpeg"], "min_longest_side_px": 300},
         "cv": {"engine": "cv", "min_short_side_px": 900, "min_bytes": cv_min_bytes},
         "ocr": {"engine": "ocr", "language": "eng"},
         "metadata": {
@@ -42,6 +47,29 @@ def _make_config(root: Path, cv_min_bytes: int) -> Path:
     path = root / "config.json"
     path.write_text(json.dumps(cfg), encoding="utf-8")
     return path
+
+
+def _build_multipart(fields: dict[str, str], files: dict[str, tuple[str, bytes, str]]) -> tuple[bytes, str]:
+    boundary = f"----caipture-{uuid4().hex}"
+    lines: list[bytes] = []
+
+    for key, value in fields.items():
+        lines.append(f"--{boundary}".encode())
+        lines.append(f'Content-Disposition: form-data; name="{key}"'.encode())
+        lines.append(b"")
+        lines.append(value.encode())
+
+    for field_name, (filename, content, content_type) in files.items():
+        lines.append(f"--{boundary}".encode())
+        lines.append(f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"'.encode())
+        lines.append(f"Content-Type: {content_type}".encode())
+        lines.append(b"")
+        lines.append(content)
+
+    lines.append(f"--{boundary}--".encode())
+    lines.append(b"")
+    body = b"\r\n".join(lines)
+    return body, boundary
 
 
 @given("a temporary Caipture test environment")
@@ -67,6 +95,66 @@ def step_inputs(context, text: str) -> None:
     make_png(context.front, 1800, 1600)
     make_png(context.back, 1800, 1600)
     context.back.with_suffix(".txt").write_text(text, encoding="utf-8")
+
+
+@given("the web server is started for browser testing")
+def step_start_web(context) -> None:
+    Handler.pipeline = context.pipeline
+    context.web_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    host, port = context.web_server.server_address
+    context.web_base_url = f"http://{host}:{port}"
+    context.web_thread = threading.Thread(target=context.web_server.serve_forever, daemon=True)
+    context.web_thread.start()
+
+
+@when('I open the browser page "{path}"')
+def step_open_browser(context, path: str) -> None:
+    with urllib.request.urlopen(context.web_base_url + path, timeout=3) as response:
+        context.browser_page = response.read().decode("utf-8", errors="replace")
+
+
+@then('the page should contain "{text}"')
+def step_page_contains(context, text: str) -> None:
+    assert text in context.browser_page
+
+
+@when("I upload fixture files through the web page form")
+def step_upload_fixtures(context) -> None:
+    project_root = Path(__file__).resolve().parents[4]
+    front = project_root / "tests" / "fixtures" / "front.png"
+    back = project_root / "tests" / "fixtures" / "back.png"
+
+    body, boundary = _build_multipart(
+        fields={"auto_run": "false"},
+        files={
+            "front_file": ("front.png", front.read_bytes(), "image/png"),
+            "back_file": ("back.png", back.read_bytes(), "image/png"),
+        },
+    )
+    req = urllib.request.Request(
+        context.web_base_url + "/upload-web",
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as response:
+        context.upload_response = response.read().decode("utf-8", errors="replace")
+
+
+@then("a job should be created from web upload")
+def step_job_created(context) -> None:
+    jobs = context.pipeline.queue.list_jobs()
+    assert len(jobs) >= 1
+    assert "Upload successful" in context.upload_response
+
+
+@then("the central journal should contain web upload actions")
+def step_journal_has_actions(context) -> None:
+    journal = Path(context.pipeline.config["monitoring"]["runtime_dir"]) / "journal.jsonl"
+    assert journal.exists()
+    text = journal.read_text(encoding="utf-8")
+    assert "http_post" in text
+    assert "create_job" in text
 
 
 @when("I create a new processing job")
