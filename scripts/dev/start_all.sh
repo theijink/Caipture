@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 mkdir -p storage/runtime
+rm -f storage/runtime/session_metrics.json
 
 export PYTHONPATH=src
 export CAIPTURE_CONFIG="${CAIPTURE_CONFIG:-deploy/configs/dev/config.json}"

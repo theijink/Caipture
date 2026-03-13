@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from caipture.journal import Journal
 from caipture.models import JobStatus
 from caipture.utils import utc_now_iso
 
@@ -43,6 +44,7 @@ class JobQueue:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.journal = Journal(self.db_path.parent / "journal.jsonl")
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -75,6 +77,7 @@ class JobQueue:
                 ),
             )
         self.add_event(job["job_id"], "upload", "created", {"status": JobStatus.UPLOADED.value})
+        self.journal.log("queue", "create_job", {"job_id": job["job_id"], "item_id": job["item_id"]})
 
     def set_status(self, job_id: str, status: JobStatus, error_code: str | None = None, error_message: str | None = None) -> None:
         with self._connect() as conn:
@@ -82,6 +85,11 @@ class JobQueue:
                 "UPDATE jobs SET status=?, updated_at=?, error_code=?, error_message=? WHERE job_id=?",
                 (status.value, utc_now_iso(), error_code, error_message, job_id),
             )
+        self.journal.log(
+            "queue",
+            "set_status",
+            {"job_id": job_id, "status": status.value, "error_code": error_code, "error_message": error_message},
+        )
 
     def update_flags(self, job_id: str, **flags: bool) -> None:
         parts = []
@@ -124,6 +132,7 @@ class JobQueue:
                 "INSERT INTO events(job_id, stage, event, timestamp, details) VALUES (?,?,?,?,?)",
                 (job_id, stage, event, utc_now_iso(), json.dumps(details, sort_keys=True)),
             )
+        self.journal.log("queue", "event", {"job_id": job_id, "stage": stage, "event": event, "details": details})
 
     def fetch_events(self, job_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:

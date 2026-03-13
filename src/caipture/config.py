@@ -57,3 +57,9 @@ def _validate_config(config: dict[str, Any]) -> None:
     retries = config["queue"].get("max_retries")
     if not isinstance(retries, int) or retries < 0:
         raise ConfigError("queue.max_retries must be a non-negative integer")
+
+    monitoring = config.get("monitoring", {})
+    if monitoring:
+        refresh_seconds = monitoring.get("refresh_seconds", 5)
+        if not isinstance(refresh_seconds, int) or refresh_seconds < 1:
+            raise ConfigError("monitoring.refresh_seconds must be a positive integer")

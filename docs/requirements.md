@@ -169,6 +169,8 @@ failed
 `FR-071` Metrics shall include upload count, queue depth, per-step duration, failure count, and review-required rate.
 
 `FR-072` Per-job debug bundle generation shall be supported via scriptable command.
+`FR-073` Web service shall expose an operator monitoring view containing service status, application status, process counts, LLM usage since session start, and system load.
+`FR-074` System shall maintain a central append-only runtime journal file for debugging actions across web and queue/pipeline operations.
 
 ---
 

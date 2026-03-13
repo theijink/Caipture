@@ -4,7 +4,7 @@ Caipture is a local-first, service-oriented pipeline for digitizing historical p
 
 ## Implemented PoC Components
 
-- `services/web`: JSON API for upload/status/review and one-shot processing trigger
+- `services/web`: JSON API and monitoring dashboard
 - `services/worker-cv`: validation + front-image derivative generation
 - `services/worker-ocr`: OCR artifact generation (deterministic PoC surrogate)
 - `services/worker-metadata`: canonical metadata generation and review decision
@@ -25,6 +25,40 @@ Set config explicitly:
 export CAIPTURE_CONFIG=deploy/configs/dev/config.json
 ```
 
+### Web Hosting Configuration
+
+Web host/port can be configured in config file under `web.host` and `web.port`, or overridden by environment variables:
+
+- `CAIPTURE_WEB_HOST`
+- `CAIPTURE_WEB_PORT`
+
+Default dev URL:
+
+- `http://127.0.0.1:8080/`
+
+## Web Access and Monitoring
+
+When the web service is running:
+
+- Monitoring dashboard (HTML): `GET /`
+- Monitoring data (JSON): `GET /monitoring`
+- Health probe: `GET /health`
+- Job status: `GET /jobs/<job_id>`
+
+Dashboard includes:
+
+- status of services
+- status of applications
+- LLM usage since session start
+- process counts (running/finished/aborted/possible queue)
+- system load
+
+Monitoring behavior is configurable via `monitoring` section in config:
+
+- `runtime_dir`
+- `llm_gateway_health_url`
+- `refresh_seconds`
+
 ## Local Run (without containers)
 
 Start all services:
@@ -42,7 +76,7 @@ scripts/dev/stop_all.sh
 ### Upload a job
 
 ```bash
-PYTHONPATH=src python -m caipture.cli --config deploy/configs/dev/config.json \
+PYTHONPATH=src python3 -m caipture.cli --config deploy/configs/dev/config.json \
   upload --front /path/to/front.png --back /path/to/back.png
 ```
 
@@ -55,9 +89,9 @@ scripts/dev/run_pipeline_once.sh
 ### Approve review and export
 
 ```bash
-PYTHONPATH=src python -m caipture.cli --config deploy/configs/dev/config.json \
+PYTHONPATH=src python3 -m caipture.cli --config deploy/configs/dev/config.json \
   review-approve --job-id <job_id> --approved-by <name>
-PYTHONPATH=src python -m caipture.cli --config deploy/configs/dev/config.json run-export-once
+PYTHONPATH=src python3 -m caipture.cli --config deploy/configs/dev/config.json run-export-once
 ```
 
 ## Container Run (Podman Compose)
@@ -69,12 +103,18 @@ scripts/dev/compose_down.sh
 
 ## Tests
 
-Run all unit + integration tests:
+Unit + integration tests:
 
 ```bash
 scripts/test/run_all.sh
 ```
 
+BDD integration tests (Cucumber/Gherkin using `behave`):
+
+```bash
+scripts/test/run_bdd.sh
+```
+
 ## Notes
 
-This PoC uses deterministic, local surrogate logic for CV/OCR/LLM behavior so tests are reproducible and do not require external dependencies.
+This PoC uses deterministic, local surrogate logic for CV/OCR/LLM behavior so tests are reproducible and do not require external provider dependencies.

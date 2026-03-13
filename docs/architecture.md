@@ -308,6 +308,9 @@ Required metrics:
 
 Each service should expose health endpoints for liveness/readiness.
 
+Web service should also expose a monitoring dashboard/API aggregating service health, application status, queue/process counts, LLM usage counters, and system load.
+For debugging, runtime actions should be appended to a central journal file (for example `storage/runtime/journal.jsonl`).
+
 ---
 
 # 11. Deployment Architecture
