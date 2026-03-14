@@ -14,9 +14,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     upload = sub.add_parser("upload")
-    upload.add_argument("--front", required=True)
-    upload.add_argument("--back", required=True)
+    upload.add_argument("--subject", required=True)
+    upload.add_argument("--back", required=False, default=None)
     upload.add_argument("--context", action="append", default=[])
+    upload.add_argument("--manual-date", default="")
+    upload.add_argument("--manual-location", default="")
+    upload.add_argument("--manual-comment", default="")
 
     sub.add_parser("run-cv-once")
     sub.add_parser("run-ocr-once")
@@ -36,6 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("--job-id", required=False)
 
+    delete = sub.add_parser("delete-job")
+    delete.add_argument("--job-id", required=True)
+
     return parser
 
 
@@ -44,7 +50,16 @@ def main() -> int:
     pipeline = Pipeline(args.config)
 
     if args.cmd == "upload":
-        result = pipeline.create_job(args.front, args.back, args.context)
+        result = pipeline.create_job(
+            subject_path=args.subject,
+            back_path=args.back,
+            context_paths=args.context,
+            manual_context={
+                "date": args.manual_date,
+                "location": args.manual_location,
+                "comment": args.manual_comment,
+            },
+        )
         print(json.dumps(result))
         return 0
 
@@ -86,6 +101,10 @@ def main() -> int:
             print(json.dumps(pipeline.queue.fetch_job(args.job_id), indent=2, sort_keys=True))
         else:
             print(json.dumps(pipeline.queue.list_jobs(), indent=2, sort_keys=True))
+        return 0
+
+    if args.cmd == "delete-job":
+        print(json.dumps({"deleted": pipeline.delete_job(args.job_id)}))
         return 0
 
     return 1

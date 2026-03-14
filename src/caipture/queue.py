@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     front_input TEXT NOT NULL,
     back_input TEXT NOT NULL,
     context_inputs TEXT NOT NULL,
+    manual_context TEXT NOT NULL DEFAULT '{}',
     error_code TEXT,
     error_message TEXT,
     cv_done INTEGER NOT NULL DEFAULT 0,
@@ -52,18 +54,33 @@ class JobQueue:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _session(self):
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.executescript(SCHEMA_SQL)
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "manual_context" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN manual_context TEXT NOT NULL DEFAULT '{}'")
 
     def create_job(self, job: dict[str, Any]) -> None:
         now = utc_now_iso()
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id,item_id,status,created_at,updated_at,front_input,back_input,context_inputs
-                ) VALUES (?,?,?,?,?,?,?,?)
+                    job_id,item_id,status,created_at,updated_at,front_input,back_input,context_inputs,manual_context
+                ) VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     job["job_id"],
@@ -74,13 +91,14 @@ class JobQueue:
                     job["front_input"],
                     job["back_input"],
                     json.dumps(job.get("context_inputs", [])),
+                    json.dumps(job.get("manual_context", {}), sort_keys=True),
                 ),
             )
         self.add_event(job["job_id"], "upload", "created", {"status": JobStatus.UPLOADED.value})
         self.journal.log("queue", "create_job", {"job_id": job["job_id"], "item_id": job["item_id"]})
 
     def set_status(self, job_id: str, status: JobStatus, error_code: str | None = None, error_message: str | None = None) -> None:
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(
                 "UPDATE jobs SET status=?, updated_at=?, error_code=?, error_message=? WHERE job_id=?",
                 (status.value, utc_now_iso(), error_code, error_message, job_id),
@@ -100,34 +118,36 @@ class JobQueue:
         parts.append("updated_at=?")
         values.append(utc_now_iso())
         values.append(job_id)
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(f"UPDATE jobs SET {', '.join(parts)} WHERE job_id=?", values)
 
     def fetch_job(self, job_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
+        with self._session() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if row is None:
                 return None
             data = dict(row)
             data["context_inputs"] = json.loads(data["context_inputs"])
+            data["manual_context"] = json.loads(data.get("manual_context", "{}"))
             for key in ["cv_done", "ocr_done", "metadata_done", "review_done", "export_done"]:
                 data[key] = bool(data[key])
             return data
 
     def list_jobs(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._session() as conn:
             rows = conn.execute("SELECT * FROM jobs ORDER BY created_at").fetchall()
         out = []
         for row in rows:
             data = dict(row)
             data["context_inputs"] = json.loads(data["context_inputs"])
+            data["manual_context"] = json.loads(data.get("manual_context", "{}"))
             for key in ["cv_done", "ocr_done", "metadata_done", "review_done", "export_done"]:
                 data[key] = bool(data[key])
             out.append(data)
         return out
 
     def add_event(self, job_id: str, stage: str, event: str, details: dict[str, Any]) -> None:
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(
                 "INSERT INTO events(job_id, stage, event, timestamp, details) VALUES (?,?,?,?,?)",
                 (job_id, stage, event, utc_now_iso(), json.dumps(details, sort_keys=True)),
@@ -135,7 +155,7 @@ class JobQueue:
         self.journal.log("queue", "event", {"job_id": job_id, "stage": stage, "event": event, "details": details})
 
     def fetch_events(self, job_id: str) -> list[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._session() as conn:
             rows = conn.execute(
                 "SELECT stage, event, timestamp, details FROM events WHERE job_id=? ORDER BY id",
                 (job_id,),
@@ -161,3 +181,13 @@ class JobQueue:
 
     def select_for_export(self) -> list[dict[str, Any]]:
         return [j for j in self.list_jobs() if j["metadata_done"] and j["review_done"] and not j["export_done"] and j["status"] != JobStatus.FAILED.value]
+
+    def delete_job(self, job_id: str) -> bool:
+        with self._session() as conn:
+            cur = conn.execute("DELETE FROM events WHERE job_id=?", (job_id,))
+            _ = cur.rowcount
+            cur2 = conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+            deleted = cur2.rowcount > 0
+        if deleted:
+            self.journal.log("queue", "delete_job", {"job_id": job_id})
+        return deleted

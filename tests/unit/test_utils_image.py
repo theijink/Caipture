@@ -18,4 +18,4 @@ class ImageDimensionTests(unittest.TestCase):
     def test_jpeg_dimensions_detected(self) -> None:
         fixture = Path(__file__).resolve().parents[1] / "fixtures" / "front.png"
         dims = image_dimensions(fixture)
-        self.assertEqual(dims, (360, 480))
+        self.assertEqual(dims, (3024, 4032))

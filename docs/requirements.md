@@ -26,8 +26,8 @@ This document defines functional and non-functional requirements intended to be 
 
 ## 2.1 In Scope
 
-1. Upload front/back/context images for a photo item
-2. Automated CV processing of front image
+1. Upload subject/back/context images for a photo item
+2. Automated CV processing of subject image
 3. OCR extraction from back/context images
 4. Metadata interpretation with provenance and confidence
 5. Human review and correction
@@ -78,7 +78,7 @@ Must not access production archive data or deploy without human approval.
 
 ## 5.1 Upload and Job Creation
 
-`FR-001` The system shall accept `front_image`, `back_image`, and optional `context_images[]`.
+`FR-001` The system shall accept required `subject_image`, optional `back_image`, and optional `context_images[]`.
 
 `FR-002` Accepted file formats shall be configurable via `allowed_image_formats`.
 
@@ -98,7 +98,7 @@ Must not access production archive data or deploy without human approval.
 
 `FR-012` On validation failure, status shall become `validation_failed` with machine-readable reasons.
 
-`FR-013` CV worker shall produce front-image derivatives: boundary mask (optional), cropped image, rectified image, orientation-normalized image.
+`FR-013` CV worker shall produce subject-image derivatives: boundary mask (optional), cropped image, rectified image, orientation-normalized image.
 
 `FR-014` Output formats and quality settings shall be configurable.
 
@@ -171,6 +171,15 @@ failed
 `FR-072` Per-job debug bundle generation shall be supported via scriptable command.
 `FR-073` Web service shall expose an operator monitoring view containing service status, application status, process counts, LLM usage since session start, and system load.
 `FR-074` System shall maintain a central append-only runtime journal file for debugging actions across web and queue/pipeline operations.
+`FR-075` Web interface shall support approving review-required jobs without using CLI commands.
+`FR-076` CV stage shall crop and resize subject-image content into derived output artifacts.
+`FR-077` OCR stage shall execute OCR on back/context images and persist extracted text artifacts.
+`FR-078` Export stage shall include inferred historical date/location/context fields in export metadata mapping and file metadata where supported.
+`FR-079` Web service shall be configurable to bind to local-network interfaces for mobile device access.
+`FR-080` Web upload form shall support direct camera capture on capable mobile devices.
+`FR-081` State/detail views from dashboard interactions should be rendered in-page (modal/popup) instead of forcing raw JSON tabs.
+`FR-082` Metadata extraction shall fuse OCR evidence from both back and context images; context-only evidence must still populate canonical metadata.
+`FR-083` OCR pipeline shall support handwriting-oriented preprocessing and multi-pass OCR strategy, configurable by profile.
 
 ---
 

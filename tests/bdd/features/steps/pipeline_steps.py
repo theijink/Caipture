@@ -88,11 +88,11 @@ def step_env_custom(context, min_bytes: int) -> None:
     context.pipeline = Pipeline(context.config_path)
 
 
-@given('valid front and back PNG inputs with OCR sidecar text "{text}"')
+@given('valid subject and back PNG inputs with OCR sidecar text "{text}"')
 def step_inputs(context, text: str) -> None:
-    context.front = context.root / "front.png"
+    context.subject = context.root / "front.png"
     context.back = context.root / "back.png"
-    make_png(context.front, 1800, 1600)
+    make_png(context.subject, 1800, 1600)
     make_png(context.back, 1800, 1600)
     context.back.with_suffix(".txt").write_text(text, encoding="utf-8")
 
@@ -100,7 +100,11 @@ def step_inputs(context, text: str) -> None:
 @given("the web server is started for browser testing")
 def step_start_web(context) -> None:
     Handler.pipeline = context.pipeline
-    context.web_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    try:
+        context.web_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    except PermissionError as exc:
+        context.scenario.skip(f"socket bind not permitted in current environment: {exc}")
+        return
     host, port = context.web_server.server_address
     context.web_base_url = f"http://{host}:{port}"
     context.web_thread = threading.Thread(target=context.web_server.serve_forever, daemon=True)
@@ -121,13 +125,13 @@ def step_page_contains(context, text: str) -> None:
 @when("I upload fixture files through the web page form")
 def step_upload_fixtures(context) -> None:
     project_root = Path(__file__).resolve().parents[4]
-    front = project_root / "tests" / "fixtures" / "front.png"
+    subject = project_root / "tests" / "fixtures" / "front.png"
     back = project_root / "tests" / "fixtures" / "back.png"
 
     body, boundary = _build_multipart(
         fields={"auto_run": "false"},
         files={
-            "front_file": ("front.png", front.read_bytes(), "image/png"),
+            "subject_file": ("subject.png", subject.read_bytes(), "image/png"),
             "back_file": ("back.png", back.read_bytes(), "image/png"),
         },
     )
@@ -145,7 +149,7 @@ def step_upload_fixtures(context) -> None:
 def step_job_created(context) -> None:
     jobs = context.pipeline.queue.list_jobs()
     assert len(jobs) >= 1
-    assert "Upload successful" in context.upload_response
+    assert "Caipture Control Center" in context.upload_response
 
 
 @then("the central journal should contain web upload actions")
@@ -159,7 +163,7 @@ def step_journal_has_actions(context) -> None:
 
 @when("I create a new processing job")
 def step_create(context) -> None:
-    created = context.pipeline.create_job(str(context.front), str(context.back), [])
+    created = context.pipeline.create_job(subject_path=str(context.subject), back_path=str(context.back), context_paths=[])
     context.job_id = created["job_id"]
 
 

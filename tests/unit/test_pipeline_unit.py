@@ -34,24 +34,24 @@ class PipelineUnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             cfg_path = self._make_config(root)
-            front = root / "front.png"
+            subject = root / "front.png"
             back = root / "back.png"
-            make_png(front, 200, 200)
+            make_png(subject, 200, 200)
             make_png(back, 200, 200)
             pipeline = Pipeline(cfg_path)
             with self.assertRaises(ValueError):
-                pipeline.create_job(str(front), str(back), [])
+                pipeline.create_job(subject_path=str(subject), back_path=str(back), context_paths=[])
 
     def test_upload_stores_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             cfg_path = self._make_config(root)
-            front = root / "front.png"
+            subject = root / "front.png"
             back = root / "back.png"
-            make_png(front, 1700, 1500)
+            make_png(subject, 1700, 1500)
             make_png(back, 1700, 1500)
             pipeline = Pipeline(cfg_path)
-            result = pipeline.create_job(str(front), str(back), [])
+            result = pipeline.create_job(subject_path=str(subject), back_path=str(back), context_paths=[])
             job_dir = Path(pipeline.config["storage"]["root"]) / "jobs" / result["job_id"]
             self.assertTrue((job_dir / "inputs" / "front.png").exists())
             self.assertTrue((job_dir / "inputs" / "back.png").exists())

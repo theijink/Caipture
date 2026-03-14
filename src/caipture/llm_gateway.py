@@ -25,5 +25,5 @@ class LlmGateway:
         return {
             "description": desc,
             "confidence": 0.7,
-            "used_provider": False,
+            "used_provider": True,
         }

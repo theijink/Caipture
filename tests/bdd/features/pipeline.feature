@@ -5,7 +5,7 @@ Feature: End-to-end processing pipeline
 
   Scenario: Successful pipeline with review approval and export
     Given a temporary Caipture test environment
-    And valid front and back PNG inputs with OCR sidecar text "Summer 1934 Enschede family"
+    And valid subject and back PNG inputs with OCR sidecar text "Summer 1934 Enschede family"
     When I create a new processing job
     And I run the CV, OCR, and metadata workers once
     Then the job status should be "review_required"
@@ -16,7 +16,7 @@ Feature: End-to-end processing pipeline
 
   Scenario: Validation failure blocks downstream stages
     Given a temporary Caipture test environment with CV min bytes 10000000
-    And valid front and back PNG inputs with OCR sidecar text "Summer 1934 Enschede"
+    And valid subject and back PNG inputs with OCR sidecar text "Summer 1934 Enschede"
     When I create a new processing job
     And I run the CV worker once
     Then the job status should be "validation_failed"

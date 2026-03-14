@@ -42,6 +42,8 @@ Responsibilities:
 - review UI/API
 - status and metrics API
 - export trigger/download
+- operator dashboard (including queue approval actions and journal visibility)
+- LAN/mobile-friendly hosting (local network bind support)
 
 Must not:
 
@@ -53,8 +55,8 @@ Must not:
 Responsibilities:
 
 - quality validation
-- boundary detection
-- crop, rectify, orientation normalization
+- boundary-aware trim/crop
+- resize/normalize output image
 - artifact emission and event updates
 
 ## 3.3 `services/worker-ocr`
@@ -64,6 +66,7 @@ Responsibilities:
 - OCR on back/context images
 - confidence extraction
 - artifact emission and event updates
+- multi-pass OCR strategy with optional preprocessing for handwriting robustness
 
 ## 3.4 `services/worker-metadata`
 
@@ -75,6 +78,7 @@ Responsibilities:
 - canonical metadata generation
 - schema validation
 - review requirement decision
+- explicit fusion of OCR evidence from back and all context images
 
 ## 3.5 `services/worker-export`
 
@@ -126,7 +130,7 @@ Network and mount policy must enforce these boundaries.
 ## 5.2 CV Stage
 
 1. CV worker consumes queued job.
-2. Runs validation checks and front-image transforms.
+2. Runs validation checks and subject-image transforms.
 3. On validation failure: state `validation_failed`.
 4. On success: writes derived artifacts, emits events.
 
@@ -310,6 +314,7 @@ Each service should expose health endpoints for liveness/readiness.
 
 Web service should also expose a monitoring dashboard/API aggregating service health, application status, queue/process counts, LLM usage counters, and system load.
 For debugging, runtime actions should be appended to a central journal file (for example `storage/runtime/journal.jsonl`).
+Dashboard detail views should be consumable in-page (for example modal/popup JSON views) rather than requiring navigation to raw JSON tabs.
 
 ---
 
@@ -339,6 +344,7 @@ Differences between dev and rpi must be configuration-only.
 3. Keep workers idempotent using job+stage execution guards.
 4. Build contract tests around event/state/artifact contracts before scaling features.
 5. Treat `docs/metadata-schema.md` as normative for metadata structure.
+6. CV/OCR adapter implementations may be tool-backed (for example ImageMagick and Tesseract CLI), but must preserve service contracts.
 
 ---
 

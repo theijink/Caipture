@@ -92,6 +92,12 @@ Execution:
 
 - `python3 -m behave tests/bdd/features`
 
+Additional integration assertions must verify OCR evidence fusion:
+
+- context-only date/location/event extraction
+- back/context source text persistence into canonical metadata
+- per-context OCR artifact references (`context_ocr_###.txt`)
+
 ---
 
 # 3. Test Data Strategy

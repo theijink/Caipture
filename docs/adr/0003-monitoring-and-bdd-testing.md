@@ -31,16 +31,19 @@ Operational observability and behavior-level verification were therefore incompl
    - process counts (running, finished, aborted, possible queue)
    - host system load
    - recent runtime journal actions
+   - per-service process load (CPU/RSS) visualization
 3. Introduce central append-only runtime journal:
    - `storage/runtime/journal.jsonl`
    - written by web actions and queue/pipeline events
 4. Add/extend Cucumber-style BDD tests with `behave` under `tests/bdd/features`, including web page access and fixture upload scenario.
+5. Enable web-based approval actions for review-required jobs from dashboard queue widget.
 
 ---
 
 ## Implementation Notes
 
 - Web dashboard now includes an upload form so test and debug workflows can be executed from the browser.
+- Dashboard style supports system dark/light preference for readability.
 - Monitoring values are aggregated from queue state, PID checks, session metrics, and system load.
 - Session metrics are persisted in runtime storage (`session_metrics.json`) and surfaced by the dashboard.
 - Fixture compatibility updated: image dimension detection now supports both PNG and JPEG signatures (important for mixed fixture content).
