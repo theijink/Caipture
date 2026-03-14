@@ -160,12 +160,14 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertEqual(pipeline.run_cv_worker_once(), 1)
             self.assertEqual(pipeline.run_ocr_worker_once(), 1)
             self.assertEqual(pipeline.run_metadata_worker_once(), 1)
+            self.assertEqual(pipeline.run_export_worker_once(), 1)
 
             metadata_path = Path(pipeline.config["storage"]["root"]) / "jobs" / job_id / "metadata" / "photo_item.json"
             doc = json.loads(metadata_path.read_text(encoding="utf-8"))
             self.assertEqual(doc["historical_metadata"]["date"]["from"], "1954-07-12")
             self.assertEqual(doc["historical_metadata"]["location"]["normalized"]["name"], "Enschede")
             self.assertEqual(doc["historical_metadata"]["description"]["text"], "Family portrait on market day")
+            self.assertEqual(pipeline.queue.fetch_job(job_id)["status"], "completed")
             self.assertEqual(
                 doc["historical_metadata"]["source_text"]["manual_context"],
                 {
@@ -174,3 +176,30 @@ class PipelineIntegrationTests(unittest.TestCase):
                     "comment": "Family portrait on market day",
                 },
             )
+
+    def test_export_tolerates_missing_date_across_front_fixture_set(self) -> None:
+        fixture_root = Path(__file__).resolve().parents[1] / "fixtures"
+        front_fixtures = sorted(fixture_root.glob("front*.png")) + sorted(fixture_root.glob("front*.jpg"))
+        self.assertTrue(front_fixtures)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root, cv_min_bytes=10)
+            pipeline = Pipeline(cfg_path)
+            pipeline.config["upload"]["min_longest_side_px"] = 300
+
+            for fixture in front_fixtures:
+                created = pipeline.create_job(subject_path=str(fixture), context_paths=[])
+                job_id = created["job_id"]
+                self.assertEqual(pipeline.run_cv_worker_once(), 1, fixture.name)
+                self.assertEqual(pipeline.run_ocr_worker_once(), 1, fixture.name)
+                self.assertEqual(pipeline.run_metadata_worker_once(), 1, fixture.name)
+                job = pipeline.queue.fetch_job(job_id)
+                self.assertIsNotNone(job, fixture.name)
+                if job["status"] == "review_required":
+                    pipeline.apply_review(job_id, approved_by="itest")
+                self.assertEqual(pipeline.run_export_worker_once(), 1, fixture.name)
+                final = pipeline.queue.fetch_job(job_id)
+                self.assertEqual(final["status"], "completed", fixture.name)
+                out_image = Path(pipeline.config["storage"]["root"]) / "jobs" / job_id / "exports" / "photo_export.png"
+                self.assertTrue(out_image.exists(), fixture.name)

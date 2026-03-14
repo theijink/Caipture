@@ -336,14 +336,19 @@ class Pipeline:
                 out_image = job_dir / "exports" / "photo_export.png"
                 shutil.copy2(rectified, out_image)
 
+                historical = self._dict_or_empty(doc.get("historical_metadata"))
+                date_obj = self._dict_or_empty(historical.get("date"))
+                description_obj = self._dict_or_empty(historical.get("description"))
+                location_obj = self._dict_or_empty(historical.get("location"))
+                normalized_location = self._dict_or_empty(location_obj.get("normalized"))
                 mapping = {
                     "exif": {
                         "DateTimeDigitized": doc["digitization_metadata"]["digitized_at"],
-                        "DateTimeOriginal": doc.get("historical_metadata", {}).get("date", {}).get("from", ""),
+                        "DateTimeOriginal": date_obj.get("from", ""),
                     },
                     "iptc": {
-                        "CaptionAbstract": doc.get("historical_metadata", {}).get("description", {}).get("text", ""),
-                        "City": doc.get("historical_metadata", {}).get("location", {}).get("normalized", {}).get("name", ""),
+                        "CaptionAbstract": description_obj.get("text", ""),
+                        "City": normalized_location.get("name", ""),
                     },
                     "xmp": {
                         "caipture:ItemId": doc["item_id"],
@@ -892,15 +897,19 @@ class Pipeline:
         return None
 
     def _build_export_comment(self, doc: dict[str, Any]) -> str:
-        hist = doc.get("historical_metadata", {})
+        hist = self._dict_or_empty(doc.get("historical_metadata"))
+        date_obj = self._dict_or_empty(hist.get("date"))
+        location_obj = self._dict_or_empty(hist.get("location"))
+        normalized_location = self._dict_or_empty(location_obj.get("normalized"))
+        description_obj = self._dict_or_empty(hist.get("description"))
         parts = []
-        date_from = hist.get("date", {}).get("from")
+        date_from = date_obj.get("from")
         if date_from:
             parts.append(f"date={date_from}")
-        loc = hist.get("location", {}).get("normalized", {}).get("name", "")
+        loc = normalized_location.get("name", "")
         if loc:
             parts.append(f"location={loc}")
-        desc = hist.get("description", {}).get("text", "")
+        desc = description_obj.get("text", "")
         if desc:
             parts.append(f"description={desc}")
         people = [p.get("name", "") for p in hist.get("people", []) if p.get("name")]
@@ -924,7 +933,9 @@ class Pipeline:
             return
 
     def _set_export_timestamp_from_metadata(self, image_path: Path, doc: dict[str, Any]) -> None:
-        raw = doc.get("historical_metadata", {}).get("date", {}).get("from")
+        historical = self._dict_or_empty(doc.get("historical_metadata"))
+        date_obj = self._dict_or_empty(historical.get("date"))
+        raw = date_obj.get("from")
         if not raw:
             return
         try:
@@ -939,3 +950,6 @@ class Pipeline:
             os.utime(image_path, (ts, ts))
         except Exception:
             return
+
+    def _dict_or_empty(self, value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
