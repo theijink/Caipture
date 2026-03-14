@@ -22,12 +22,18 @@ flowchart LR
 ## Implemented PoC Components
 
 - `services/web`: JSON API and monitoring dashboard
-- `services/worker-cv`: validation + front-image derivative generation
+- `services/worker-cv`: validation + subject-image derivative generation
 - `services/worker-ocr`: OCR artifact generation (deterministic PoC surrogate)
 - `services/worker-metadata`: canonical metadata generation and review decision
 - `services/worker-export`: export file + sidecar generation
 - `services/llm-gateway`: constrained model-gateway abstraction
 - `src/caipture`: shared contracts, queue, storage, pipeline logic
+
+## Requirements
+- Written for macOS/Linux 
+- `podman` installed
+- `docker` installed
+- `python` installed
 
 ## Configuration
 
@@ -84,11 +90,13 @@ Monitoring behavior is configurable via `monitoring` section in config:
 
 Open `http://127.0.0.1:8080/` and use **Upload Via Web Page** form:
 
-1. Select front image and back image.
-2. Optionally add context images.
-3. Submit form.
-4. Approve `review_required` jobs from **Jobs Queue and Approval**.
-5. Track actions in **Recent Journal Actions**.
+1. Select subject image.
+2. Optionally select back and context images.
+3. Optionally provide manual date/location/comment when no back image is available.
+4. Submit form.
+5. Approve `review_required` jobs from **Jobs Queue and Approval**.
+6. Preview export image and metadata inline on the dashboard.
+7. Track actions in **Recent Journal Actions** (newest first).
 
 ### Central Journal (debug)
 
@@ -114,7 +122,8 @@ scripts/dev/stop_all.sh
 
 ```bash
 PYTHONPATH=src python3 -m caipture.cli --config deploy/configs/dev/config.json \
-  upload --front /path/to/front.png --back /path/to/back.png
+  upload --subject /path/to/subject.png --back /path/to/back.png \
+  --manual-date 1954-07-12 --manual-location \"Enschede\" --manual-comment \"Family portrait\"
 ```
 
 ### One-shot pipeline execution
@@ -161,6 +170,17 @@ Current implementation details:
 - LLM gateway logic is enabled by default in config and contributes metadata descriptions.
 - Export stage writes contextual comment metadata and aligns output file timestamp to inferred historical date when available.
 
+## Security and Data Flow
+
+Caipture is designed as a local-first pipeline:
+
+- Uploaded images are stored on local disk under `storage/jobs/<job_id>/inputs`.
+- CV/OCR/metadata/export artifacts are generated locally under the same `storage/jobs/<job_id>` tree.
+- Runtime logs and metrics are local files under `storage/runtime/` (including `journal.jsonl`).
+- OpenCV (`cv2`), ImageMagick (`magick`), and Tesseract (`tesseract`) run as local processes on your machine; data is not sent to those tools externally.
+- LLM gateway behavior is controlled by config (`metadata.enable_llm_gateway`). In this PoC it is local deterministic logic; if replaced with a remote provider later, OCR/context text and derived prompts could leave the host. Keep it disabled for strict local-only operation.
+- The web dashboard exposes job and metadata state over HTTP on configured host/port. For LAN hosting, assume anyone on that network with access can view dashboard data unless you add network controls/reverse proxy auth.
+
 <!-- BEGIN IMPORTED SERVICE READMES -->
 
 ## Imported Service READMEs
@@ -178,10 +198,10 @@ Provides the local operator interface and API entrypoint for Caipture.
 Core responsibilities:
 
 - host dashboard UI (`/`)
-- accept photo uploads via web form and JSON API
+- accept subject/back/context uploads via web form and JSON API
 - expose monitoring and process state
-- allow approving review-required jobs from queue widget
-- provide download links for generated export image and metadata sidecar
+- allow approving and deleting jobs from queue widget
+- provide preview and download links for generated export image and metadata
 
 ## Network Hosting
 
@@ -198,9 +218,12 @@ Core responsibilities:
 - `GET /process/<service_name>` service process state (JSON)
 - `GET /download/<job_id>/image` download generated image
 - `GET /download/<job_id>/sidecar` download metadata sidecar
+- `GET /preview/<job_id>/image` inline image preview fragment (HTML)
+- `GET /preview/<job_id>/metadata` metadata preview (JSON)
 - `POST /upload-web` multipart form upload
 - `POST /upload` JSON upload API
 - `POST /approve-web` approve review-required job
+- `POST /delete-web` delete job + remove artifacts
 - `POST /run-all-once` run one processing sweep
 
 ## Runtime Data
@@ -220,7 +243,7 @@ PYTHONPATH=src CAIPTURE_CONFIG=deploy/configs/dev/config.json python3 services/w
 
 ## Purpose
 
-Processes uploaded front image into corrected output artifacts.
+Processes uploaded subject image into corrected output artifacts.
 
 Core steps:
 
@@ -260,6 +283,7 @@ Extracts text from back/context images and stores OCR artifacts for metadata sta
 - applies optional preprocessing variants for handwriting robustness (`enable_preprocessing`)
 - computes confidence estimate from TSV output when available
 - deterministic sidecar fallback (`<image>.txt`) remains enabled for tests
+- if handwriting quality is poor, use manual context fields from upload form as first-class metadata evidence
 
 Artifacts:
 

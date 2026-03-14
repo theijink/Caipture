@@ -130,7 +130,7 @@ Network and mount policy must enforce these boundaries.
 ## 5.2 CV Stage
 
 1. CV worker consumes queued job.
-2. Runs validation checks and front-image transforms.
+2. Runs validation checks and subject-image transforms.
 3. On validation failure: state `validation_failed`.
 4. On success: writes derived artifacts, emits events.
 

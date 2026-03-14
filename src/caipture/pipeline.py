@@ -33,24 +33,38 @@ class Pipeline:
         runtime_dir = Path(self.config.get("monitoring", {}).get("runtime_dir", Path(self.config["storage"]["root"]) / "runtime"))
         self.metrics = SessionMetrics(runtime_dir / "session_metrics.json")
 
-    def create_job(self, front_path: str, back_path: str, context_paths: list[str] | None = None) -> dict[str, Any]:
+    def create_job(
+        self,
+        subject_path: str,
+        context_paths: list[str] | None = None,
+        back_path: str | None = None,
+        manual_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         context_paths = context_paths or []
+        manual_context = manual_context or {}
         job_id = f"job_{utc_now_iso().replace('-', '').replace(':', '').replace('T', '_').replace('Z', '')}_{len(self.queue.list_jobs())+1:04d}"
         item_id = f"item_{job_id.split('_', 1)[1]}"
 
-        front_src = Path(front_path)
-        back_src = Path(back_path)
-        if not front_src.exists() or not back_src.exists():
-            raise FileNotFoundError("front_path and back_path must exist")
+        front_src = Path(subject_path)
+        if not front_src.exists():
+            raise FileNotFoundError("subject_path must exist")
 
         self._validate_upload_file(front_src)
-        self._validate_upload_file(back_src)
+        back_src: Path | None = None
+        if back_path:
+            back_src = Path(back_path)
+            if not back_src.exists():
+                raise FileNotFoundError("back_path must exist when provided")
+            self._validate_upload_file(back_src)
         for context in context_paths:
             self._validate_upload_file(Path(context))
 
         self.storage.create_job_dirs(job_id)
         front_ref = self.storage.ingest_file(front_src, job_id, f"front{front_src.suffix.lower()}")
-        back_ref = self.storage.ingest_file(back_src, job_id, f"back{back_src.suffix.lower()}")
+        back_rel = ""
+        if back_src is not None:
+            back_ref = self.storage.ingest_file(back_src, job_id, f"back{back_src.suffix.lower()}")
+            back_rel = back_ref.path
 
         context_refs: list[str] = []
         for idx, context_path in enumerate(context_paths, start=1):
@@ -61,14 +75,16 @@ class Pipeline:
         self.queue.create_job(
             {
                 "job_id": job_id,
-                "item_id": item_id,
-                "front_input": front_ref.path,
-                "back_input": back_ref.path,
-                "context_inputs": context_refs,
-            }
-        )
+                    "item_id": item_id,
+                    "front_input": front_ref.path,
+                    "back_input": back_rel,
+                    "context_inputs": context_refs,
+                    "manual_context": manual_context,
+                }
+            )
         self.queue.set_status(job_id, JobStatus.QUEUED)
         self.queue.add_event(job_id, "upload", "queued", {})
+        write_json(self.storage.job_dir(job_id) / "metadata" / "manual_context.json", manual_context)
         return {"job_id": job_id, "item_id": item_id}
 
     def run_cv_worker_once(self) -> int:
@@ -118,7 +134,11 @@ class Pipeline:
                 text_parts: list[str] = []
                 confs: list[float] = []
                 ocr_refs: list[str] = []
-                for idx, rel in enumerate([job["back_input"], *job["context_inputs"]]):
+                ocr_inputs = []
+                if job["back_input"]:
+                    ocr_inputs.append(job["back_input"])
+                ocr_inputs.extend(job["context_inputs"])
+                for idx, rel in enumerate(ocr_inputs):
                     p = self.storage.job_dir(job_id) / rel
                     text, conf = self._extract_ocr_text(p)
                     text_parts.append(text)
@@ -131,12 +151,16 @@ class Pipeline:
                         (derived_dir / f"context_ocr_{idx:03d}.txt").write_text(text, encoding="utf-8")
                     ocr_refs.append(out_ref)
 
-                back_text = text_parts[0] if text_parts else ""
-                context_text = "\n".join(text_parts[1:])
+                back_text = text_parts[0] if (text_parts and job["back_input"]) else ""
+                context_text = "\n".join(text_parts[1:] if job["back_input"] else text_parts)
                 (derived_dir / "context_ocr.txt").write_text(context_text, encoding="utf-8")
                 write_json(
                     derived_dir / "ocr_report.json",
                     {
+                        "engine": self.config["ocr"].get("engine", "ocr"),
+                        "tesseract_available": shutil.which("tesseract") is not None,
+                        "psm_candidates": self.config["ocr"].get("psm_candidates", [6, 11, 12]),
+                        "preprocessing_enabled": bool(self.config["ocr"].get("enable_preprocessing", True)),
                         "back_confidence": confs[0] if confs else self._confidence_for_text(back_text),
                         "context_confidence": (sum(confs[1:]) / len(confs[1:])) if len(confs) > 1 else self._confidence_for_text(context_text),
                         "ocr_artifacts": ocr_refs,
@@ -161,18 +185,25 @@ class Pipeline:
                 job_dir = self.storage.job_dir(job_id)
                 back_text = (job_dir / "derived" / "back_ocr.txt").read_text(encoding="utf-8") if (job_dir / "derived" / "back_ocr.txt").exists() else ""
                 context_text = (job_dir / "derived" / "context_ocr.txt").read_text(encoding="utf-8") if (job_dir / "derived" / "context_ocr.txt").exists() else ""
+                manual_context = read_json(job_dir / "metadata" / "manual_context.json") if (job_dir / "metadata" / "manual_context.json").exists() else job.get("manual_context", {})
                 context_parts = []
                 for i in range(1, 32):
                     p = job_dir / "derived" / f"context_ocr_{i:03d}.txt"
                     if not p.exists():
                         break
                     context_parts.append(p.read_text(encoding="utf-8"))
-                merged_text = "\n".join([back_text, context_text]).strip()
+                merged_text = "\n".join(
+                    [back_text, context_text, manual_context.get("date", ""), manual_context.get("location", ""), manual_context.get("comment", "")]
+                ).strip()
 
                 date_obj = self._infer_date(merged_text)
                 location_obj = self._infer_location(merged_text)
                 people_obj = self._infer_people(merged_text)
                 llm_summary = self.llm.summarize_context(merged_text)
+                if manual_context.get("date"):
+                    date_obj = self._manual_date(manual_context["date"])
+                if manual_context.get("location"):
+                    location_obj = self._manual_location(manual_context["location"])
                 self.metrics.increment("llm_requests_total")
                 if bool(llm_summary.get("used_provider", False)):
                     self.metrics.increment("llm_enabled_requests")
@@ -193,8 +224,8 @@ class Pipeline:
                     "updated_at": now,
                     "status": JobStatus.REVIEW_REQUIRED.value if review_required else JobStatus.COMPLETED.value,
                     "inputs": {
-                        "front_image": self._file_ref_dict(job_dir / job["front_input"], job["front_input"]),
-                        "back_image": self._file_ref_dict(job_dir / job["back_input"], job["back_input"]),
+                        "subject_image": self._file_ref_dict(job_dir / job["front_input"], job["front_input"]),
+                        "back_image": self._file_ref_dict(job_dir / job["back_input"], job["back_input"]) if job["back_input"] else None,
                         "context_images": [self._file_ref_dict(job_dir / c, c) for c in job["context_inputs"]],
                     },
                     "derived": {
@@ -213,15 +244,16 @@ class Pipeline:
                             "back_ocr_text": back_text,
                             "context_ocr_text": context_text,
                             "context_ocr_texts": context_parts,
+                            "manual_context": manual_context,
                         },
                         "event": self._infer_event(merged_text),
                         "description": {
-                            "text": llm_summary["description"] or self._infer_description(merged_text, people_obj, location_obj),
+                            "text": manual_context.get("comment") or llm_summary["description"] or self._infer_description(merged_text, people_obj, location_obj),
                             "confidence": llm_summary["confidence"] if llm_summary["description"] else 0.6,
                             "sources": [
                                 {
-                                    "source_type": "llm_inference",
-                                    "source_ref": "llm-gateway",
+                                    "source_type": "manual_entry" if manual_context.get("comment") else "llm_inference",
+                                    "source_ref": "manual_context" if manual_context.get("comment") else "llm-gateway",
                                 }
                             ],
                         },
@@ -275,10 +307,17 @@ class Pipeline:
         doc["updated_at"] = utc_now_iso()
         doc["status"] = JobStatus.COMPLETED.value
         write_json(metadata_path, doc)
+        self._update_description_memory(doc)
 
         self.queue.update_flags(job_id, review_done=True)
         self.queue.set_status(job_id, JobStatus.COMPLETED)
         self.queue.add_event(job_id, "review", "approved", {"approved_by": approved_by})
+
+    def delete_job(self, job_id: str) -> bool:
+        job_dir = self.storage.job_dir(job_id)
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+        return self.queue.delete_job(job_id)
 
     def run_export_worker_once(self) -> int:
         jobs = self.queue.select_for_export()
@@ -585,6 +624,53 @@ class Pipeline:
                     "sources": [{"source_type": "ocr_text", "source_ref": "derived/context_ocr.txt", "excerpt": k}],
                 }
         return None
+
+    def _manual_date(self, raw: str) -> dict[str, Any]:
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", raw)
+        if m:
+            iso = m.group(1)
+            return {
+                "raw_text": raw,
+                "from": iso,
+                "to": iso,
+                "precision": "day",
+                "confidence": 1.0,
+                "sources": [{"source_type": "manual_entry", "source_ref": "manual_context", "excerpt": raw}],
+            }
+        year = re.search(r"(18\d{2}|19\d{2}|20\d{2})", raw)
+        y = year.group(1) if year else "1900"
+        return {
+            "raw_text": raw,
+            "from": f"{y}-01-01",
+            "to": f"{y}-12-31",
+            "precision": "year",
+            "confidence": 1.0,
+            "sources": [{"source_type": "manual_entry", "source_ref": "manual_context", "excerpt": raw}],
+        }
+
+    def _manual_location(self, raw: str) -> dict[str, Any]:
+        return {
+            "raw_text": raw,
+            "normalized": {"name": raw},
+            "confidence": 1.0,
+            "sources": [{"source_type": "manual_entry", "source_ref": "manual_context", "excerpt": raw}],
+        }
+
+    def _description_memory_path(self) -> Path:
+        runtime_dir = Path(self.config.get("monitoring", {}).get("runtime_dir", Path(self.config["storage"]["root"]) / "runtime"))
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        return runtime_dir / "description_memory.json"
+
+    def _update_description_memory(self, doc: dict[str, Any]) -> None:
+        desc = doc.get("historical_metadata", {}).get("description", {}).get("text", "").strip()
+        loc = doc.get("historical_metadata", {}).get("location", {}).get("normalized", {}).get("name", "").strip()
+        if not desc:
+            return
+        path = self._description_memory_path()
+        mem = read_json(path) if path.exists() else {"items": []}
+        mem.setdefault("items", []).append({"location": loc, "description": desc, "updated_at": utc_now_iso()})
+        mem["items"] = mem["items"][-200:]
+        write_json(path, mem)
 
     def _file_ref_dict(self, abs_path: Path, rel_path: str) -> dict[str, Any]:
         return {

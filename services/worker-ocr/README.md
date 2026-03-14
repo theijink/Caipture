@@ -11,6 +11,7 @@ Extracts text from back/context images and stores OCR artifacts for metadata sta
 - applies optional preprocessing variants for handwriting robustness (`enable_preprocessing`)
 - computes confidence estimate from TSV output when available
 - deterministic sidecar fallback (`<image>.txt`) remains enabled for tests
+- if handwriting quality is poor, use manual context fields from upload form as first-class metadata evidence
 
 Artifacts:
 

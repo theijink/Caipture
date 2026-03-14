@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Processes uploaded front image into corrected output artifacts.
+Processes uploaded subject image into corrected output artifacts.
 
 Core steps:
 

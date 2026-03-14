@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     front_input TEXT NOT NULL,
     back_input TEXT NOT NULL,
     context_inputs TEXT NOT NULL,
+    manual_context TEXT NOT NULL DEFAULT '{}',
     error_code TEXT,
     error_message TEXT,
     cv_done INTEGER NOT NULL DEFAULT 0,
@@ -68,6 +69,9 @@ class JobQueue:
     def _init_db(self) -> None:
         with self._session() as conn:
             conn.executescript(SCHEMA_SQL)
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "manual_context" not in cols:
+                conn.execute("ALTER TABLE jobs ADD COLUMN manual_context TEXT NOT NULL DEFAULT '{}'")
 
     def create_job(self, job: dict[str, Any]) -> None:
         now = utc_now_iso()
@@ -75,8 +79,8 @@ class JobQueue:
             conn.execute(
                 """
                 INSERT INTO jobs (
-                    job_id,item_id,status,created_at,updated_at,front_input,back_input,context_inputs
-                ) VALUES (?,?,?,?,?,?,?,?)
+                    job_id,item_id,status,created_at,updated_at,front_input,back_input,context_inputs,manual_context
+                ) VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     job["job_id"],
@@ -87,6 +91,7 @@ class JobQueue:
                     job["front_input"],
                     job["back_input"],
                     json.dumps(job.get("context_inputs", [])),
+                    json.dumps(job.get("manual_context", {}), sort_keys=True),
                 ),
             )
         self.add_event(job["job_id"], "upload", "created", {"status": JobStatus.UPLOADED.value})
@@ -123,6 +128,7 @@ class JobQueue:
                 return None
             data = dict(row)
             data["context_inputs"] = json.loads(data["context_inputs"])
+            data["manual_context"] = json.loads(data.get("manual_context", "{}"))
             for key in ["cv_done", "ocr_done", "metadata_done", "review_done", "export_done"]:
                 data[key] = bool(data[key])
             return data
@@ -134,6 +140,7 @@ class JobQueue:
         for row in rows:
             data = dict(row)
             data["context_inputs"] = json.loads(data["context_inputs"])
+            data["manual_context"] = json.loads(data.get("manual_context", "{}"))
             for key in ["cv_done", "ocr_done", "metadata_done", "review_done", "export_done"]:
                 data[key] = bool(data[key])
             out.append(data)
@@ -174,3 +181,13 @@ class JobQueue:
 
     def select_for_export(self) -> list[dict[str, Any]]:
         return [j for j in self.list_jobs() if j["metadata_done"] and j["review_done"] and not j["export_done"] and j["status"] != JobStatus.FAILED.value]
+
+    def delete_job(self, job_id: str) -> bool:
+        with self._session() as conn:
+            cur = conn.execute("DELETE FROM events WHERE job_id=?", (job_id,))
+            _ = cur.rowcount
+            cur2 = conn.execute("DELETE FROM jobs WHERE job_id=?", (job_id,))
+            deleted = cur2.rowcount > 0
+        if deleted:
+            self.journal.log("queue", "delete_job", {"job_id": job_id})
+        return deleted

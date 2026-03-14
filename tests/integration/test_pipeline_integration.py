@@ -42,14 +42,14 @@ class PipelineIntegrationTests(unittest.TestCase):
             root = Path(td)
             cfg_path = self._make_config(root, cv_min_bytes=10)
 
-            front = root / "front.png"
+            subject = root / "front.png"
             back = root / "back.png"
-            make_png(front, 1800, 1600)
+            make_png(subject, 1800, 1600)
             make_png(back, 1800, 1600)
             back.with_suffix(".txt").write_text("Summer 1934 Enschede family", encoding="utf-8")
 
             pipeline = Pipeline(cfg_path)
-            created = pipeline.create_job(str(front), str(back), [])
+            created = pipeline.create_job(subject_path=str(subject), back_path=str(back), context_paths=[])
             job_id = created["job_id"]
 
             self.assertEqual(pipeline.run_cv_worker_once(), 1)
@@ -82,12 +82,12 @@ class PipelineIntegrationTests(unittest.TestCase):
             root = Path(td)
             cfg_path = self._make_config(root, cv_min_bytes=10_000_000)
 
-            front = root / "front.png"
+            subject = root / "front.png"
             back = root / "back.png"
-            make_png(front, 1600, 1600)
+            make_png(subject, 1600, 1600)
             make_png(back, 1600, 1600)
             pipeline = Pipeline(cfg_path)
-            created = pipeline.create_job(str(front), str(back), [])
+            created = pipeline.create_job(subject_path=str(subject), back_path=str(back), context_paths=[])
             job_id = created["job_id"]
 
             self.assertEqual(pipeline.run_cv_worker_once(), 1)
@@ -100,10 +100,10 @@ class PipelineIntegrationTests(unittest.TestCase):
             root = Path(td)
             cfg_path = self._make_config(root, cv_min_bytes=10)
 
-            front = root / "front.png"
+            subject = root / "front.png"
             back = root / "back.png"
             context = root / "context.png"
-            make_png(front, 1800, 1600)
+            make_png(subject, 1800, 1600)
             make_png(back, 1800, 1600)
             make_png(context, 1800, 1600)
 
@@ -115,7 +115,7 @@ class PipelineIntegrationTests(unittest.TestCase):
             )
 
             pipeline = Pipeline(cfg_path)
-            created = pipeline.create_job(str(front), str(back), [str(context)])
+            created = pipeline.create_job(subject_path=str(subject), back_path=str(back), context_paths=[str(context)])
             job_id = created["job_id"]
 
             self.assertEqual(pipeline.run_cv_worker_once(), 1)

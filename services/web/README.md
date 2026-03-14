@@ -7,10 +7,10 @@ Provides the local operator interface and API entrypoint for Caipture.
 Core responsibilities:
 
 - host dashboard UI (`/`)
-- accept photo uploads via web form and JSON API
+- accept subject/back/context uploads via web form and JSON API
 - expose monitoring and process state
-- allow approving review-required jobs from queue widget
-- provide download links for generated export image and metadata sidecar
+- allow approving and deleting jobs from queue widget
+- provide preview and download links for generated export image and metadata
 
 ## Network Hosting
 
@@ -27,9 +27,12 @@ Core responsibilities:
 - `GET /process/<service_name>` service process state (JSON)
 - `GET /download/<job_id>/image` download generated image
 - `GET /download/<job_id>/sidecar` download metadata sidecar
+- `GET /preview/<job_id>/image` inline image preview fragment (HTML)
+- `GET /preview/<job_id>/metadata` metadata preview (JSON)
 - `POST /upload-web` multipart form upload
 - `POST /upload` JSON upload API
 - `POST /approve-web` approve review-required job
+- `POST /delete-web` delete job + remove artifacts
 - `POST /run-all-once` run one processing sweep
 
 ## Runtime Data

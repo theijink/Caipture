@@ -61,14 +61,11 @@ def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str
     if "multipart/form-data" not in content_type:
         raise ValueError("expected multipart/form-data")
 
-    envelope = (
-        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
-    )
+    envelope = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
     msg = BytesParser(policy=default).parsebytes(envelope)
 
     fields: dict[str, str] = {}
     files: dict[str, list[dict[str, Any]]] = {}
-
     for part in msg.iter_parts():
         if part.get_content_disposition() != "form-data":
             continue
@@ -88,8 +85,11 @@ def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str
             )
         else:
             fields[name] = payload.decode("utf-8", errors="replace")
-
     return fields, files
+
+
+def _safe_json(obj: Any) -> str:
+    return json.dumps(obj, ensure_ascii=False)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -120,6 +120,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _redirect(self, location: str, status: int = HTTPStatus.SEE_OTHER) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _read_json(self) -> dict:
         size = int(self.headers.get("Content-Length", "0"))
@@ -153,7 +159,6 @@ class Handler(BaseHTTPRequestHandler):
             "possible_queue": status_counts.get("queued", 0) + status_counts.get("uploaded", 0) + status_counts.get("review_required", 0),
         }
 
-        monitoring_cfg = config.get("monitoring", {})
         runtime_dir = self._runtime_dir()
         service_pidfiles = {
             "web": runtime_dir / "web.pid",
@@ -163,6 +168,7 @@ class Handler(BaseHTTPRequestHandler):
             "worker_export": runtime_dir / "worker-export.pid",
             "llm_gateway": runtime_dir / "llm-gateway.pid",
         }
+
         services: dict[str, dict[str, Any]] = {}
         process_metrics: dict[str, dict[str, float | int | None]] = {}
         for service_name, pidfile in service_pidfiles.items():
@@ -178,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
             services[service_name] = {"status": status, "pid": pid}
             process_metrics[service_name] = _pid_resource_usage(pid)
 
-        llm_health_url = monitoring_cfg.get("llm_gateway_health_url", "http://127.0.0.1:8090/health")
+        llm_health_url = config.get("monitoring", {}).get("llm_gateway_health_url", "http://127.0.0.1:8090/health")
         services["llm_gateway_http"] = {"status": _http_health(llm_health_url), "pid": None}
 
         apps = {
@@ -199,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
             load = {"load1": None, "load5": None, "load15": None, "cpu_count": os.cpu_count()}
 
         metrics = self.pipeline.metrics.snapshot()
-        recent_actions = self._journal().tail(200)
+        recent_actions = list(reversed(self._journal().tail(200)))
 
         jobs_out = []
         for job in jobs:
@@ -248,15 +254,14 @@ class Handler(BaseHTTPRequestHandler):
             return "<p>No running process metrics available.</p>"
         return self._render_bars({k: int(v * 10) for k, v in cpu_map.items()}, cls="cpu")
 
-    def _render_dashboard(self, payload: dict) -> str:
-        refresh_s = int(self.pipeline.config.get("monitoring", {}).get("refresh_seconds", 5))
+    def _render_dashboard(self, payload: dict, message: str = "") -> str:
         services_rows = "".join(
             [
                 "<tr>"
                 f"<td><span class='led {('ok' if meta.get('status')=='running' else 'warn')}'></span>{name}</td>"
                 f"<td>{meta.get('status')}</td>"
                 f"<td>{meta.get('pid') or '-'}</td>"
-                f"<td><button onclick=\"openModalFromUrl('/process/{name}')\">view</button></td>"
+                f"<td><button class='inline' onclick=\"openModalFromUrl('/process/{name}')\">view</button></td>"
                 "</tr>"
                 for name, meta in payload["services"].items()
             ]
@@ -264,89 +269,113 @@ class Handler(BaseHTTPRequestHandler):
         apps_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["applications"].items()])
         status_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["job_counts"].items()])
         stage_rows = "".join([f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in payload["stage_totals"].items()])
+
         action_rows = "".join(
             [
-                f"<tr><td>{a.get('timestamp')}</td><td>{a.get('source')}</td><td>{a.get('action')}</td><td><code>{json.dumps(a.get('details', {}))}</code></td></tr>"
-                for a in payload["recent_actions"][-120:]
+                f"<tr><td>{a.get('timestamp')}</td><td>{a.get('source')}</td><td>{a.get('action')}</td><td><code>{_safe_json(a.get('details', {}))}</code></td></tr>"
+                for a in payload["recent_actions"][:200]
             ]
         )
 
         job_rows = []
-        for job in payload["jobs"][-200:]:
+        for job in sorted(payload["jobs"], key=lambda j: j.get("created_at", ""), reverse=True)[:300]:
             approve_html = ""
             if job.get("status") == "review_required":
                 approve_html = (
-                    "<form action='/approve-web' method='post'>"
-                    f"<input type='hidden' name='job_id' value='{job.get('job_id')}' />"
-                    "<input type='hidden' name='approved_by' value='web-user' />"
-                    "<button type='submit'>Approve</button></form>"
+                    f"<button class='inline' onclick=\"approveJob('{job.get('job_id')}')\">Approve</button>"
                 )
-            download_html = ""
+            export_html = "-"
             if job.get("export_available"):
-                download_html = (
-                    f"<a href='/download/{job.get('job_id')}/image'>image</a> | "
-                    f"<a href='/download/{job.get('job_id')}/sidecar'>metadata</a>"
+                export_html = (
+                    f"<button class='inline' onclick=\"openModalHtmlFromUrl('/preview/{job.get('job_id')}/image')\">preview image</button> "
+                    f"<button class='inline' onclick=\"openModalFromUrl('/preview/{job.get('job_id')}/metadata')\">preview metadata</button> "
+                    f"<a href='/download/{job.get('job_id')}/image'>download image</a> | "
+                    f"<a href='/download/{job.get('job_id')}/sidecar'>download metadata</a>"
                 )
+            links = (
+                f"<button class='inline' onclick=\"openModalFromUrl('/jobs/{job.get('job_id')}')\">job</button> "
+                f"<button class='inline' onclick=\"openModalFromUrl('/jobs/{job.get('job_id')}/events')\">events</button>"
+            )
+            delete_btn = f"<button class='danger inline' onclick=\"deleteJob('{job.get('job_id')}')\">Delete</button>"
             job_rows.append(
                 "<tr>"
                 f"<td>{job.get('job_id')}</td>"
                 f"<td>{job.get('status')}</td>"
-                f"<td><button onclick=\"openModalFromUrl('/jobs/{job.get('job_id')}')\">view</button></td>"
+                f"<td>{links}</td>"
                 f"<td>{approve_html}</td>"
-                f"<td>{download_html}</td>"
+                f"<td>{export_html}</td>"
+                f"<td>{delete_btn}</td>"
                 "</tr>"
             )
-        jobs_table = "".join(job_rows) if job_rows else "<tr><td colspan='5'>No jobs yet</td></tr>"
+        jobs_table = "".join(job_rows) if job_rows else "<tr><td colspan='6'>No jobs yet</td></tr>"
+
+        banner = f"<div class='flash'>{message}</div>" if message else ""
 
         return f"""<!doctype html>
 <html>
 <head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <meta http-equiv=\"refresh\" content=\"{refresh_s}\" />
   <title>Caipture Control Center</title>
   <style>
     :root {{
-      --bg:#f5f8fb; --card:#ffffff; --text:#0f172a; --muted:#334155; --border:#dbe4ef;
-      --barbg:#e2e8f0; --accent1:#0ea5e9; --accent2:#22c55e;
+      --bg:#eef3f8; --card:#ffffff; --text:#0f172a; --muted:#334155; --border:#cdd7e4;
+      --barbg:#e2e8f0; --accent1:#0ea5e9; --accent2:#22c55e; --danger:#dc2626;
     }}
     @media (prefers-color-scheme: dark) {{
       :root {{
-        --bg:#0b1020; --card:#141b33; --text:#e2e8f0; --muted:#94a3b8; --border:#334155;
-        --barbg:#1e293b; --accent1:#22d3ee; --accent2:#4ade80;
+        --bg:#0a1020; --card:#141b33; --text:#e2e8f0; --muted:#94a3b8; --border:#334155;
+        --barbg:#1e293b; --accent1:#22d3ee; --accent2:#4ade80; --danger:#f87171;
       }}
     }}
-    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; background: var(--bg); color: var(--text); }}
+    body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; background: radial-gradient(circle at top right, rgba(14,165,233,.12), transparent 40%), var(--bg); color: var(--text); }}
     h1 {{ margin: 0 0 8px; }}
-    .sub {{ color: var(--muted); margin-bottom: 14px; }}
-    .grid {{ display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 12px; }}
+    .sub {{ color: var(--muted); margin-bottom: 14px; display:flex; gap:14px; align-items:center; }}
+    .flash {{ padding:8px 10px; border:1px solid var(--border); border-radius:8px; margin-bottom:10px; background:var(--card); }}
+    .grid {{ display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 12px; }}
     .card {{ background: var(--card); border-radius: 10px; padding: 12px; border:1px solid var(--border); }}
     .wide {{ grid-column: span 3; }}
-    .journal {{ grid-column: span 2; min-height: 540px; }}
+    .journal {{ grid-column: span 3; min-height: 740px; }}
     table {{ width: 100%; border-collapse: collapse; }}
     td {{ border-bottom: 1px solid var(--border); padding: 6px; vertical-align: top; }}
     a {{ color: var(--accent1); }}
     .mono, code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }}
-    .bar-row {{ display: grid; grid-template-columns: 140px 1fr 70px; gap: 8px; align-items: center; margin: 6px 0; }}
+    .bar-row {{ display: grid; grid-template-columns: 150px 1fr 70px; gap: 8px; align-items: center; margin: 6px 0; }}
     .bar {{ background: var(--barbg); height: 12px; border-radius: 10px; overflow: hidden; }}
     .fill {{ background: linear-gradient(90deg,var(--accent1),var(--accent2)); height: 100%; }}
     .fill.cpu {{ background: linear-gradient(90deg,#fb7185,#f59e0b); }}
-    .actions {{ max-height: 500px; overflow: auto; }}
+    .actions {{ max-height: 680px; overflow: auto; }}
     form label {{ display: block; margin: 8px 0 2px; font-weight: 600; }}
-    input[type=file], input[type=text], button {{ width: 100%; padding: 8px; box-sizing: border-box; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); }}
+    input[type=file], input[type=text], input[type=date], textarea, button {{ width: 100%; padding: 8px; box-sizing: border-box; border-radius:6px; border:1px solid var(--border); background:transparent; color:var(--text); }}
+    textarea {{ min-height: 72px; resize: vertical; }}
     button {{ margin-top: 8px; background: #0f766e; color: white; border: 0; border-radius: 6px; cursor: pointer; }}
+    button.inline {{ width:auto; margin:0; padding:5px 9px; }}
+    button.danger {{ background: var(--danger); }}
     .led {{ display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; box-shadow:0 0 8px currentColor; }}
     .led.ok {{ color:#22c55e; background:#22c55e; }}
     .led.warn {{ color:#f59e0b; background:#f59e0b; }}
     .modal-bg {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:9999; }}
-    .modal {{ width:min(1000px,92vw); max-height:84vh; overflow:auto; margin:6vh auto; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px; }}
+    .modal {{ width:min(1100px,94vw); max-height:88vh; overflow:auto; margin:4vh auto; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px; }}
     pre {{ white-space:pre-wrap; word-break:break-word; }}
+    .preview img {{ max-width:100%; height:auto; border:1px solid var(--border); border-radius:8px; }}
   </style>
   <script>
-    function openModal(text) {{
+    function openModalText(text) {{
       const bg = document.getElementById('modal-bg');
-      const body = document.getElementById('modal-body');
-      body.textContent = text;
+      const textBody = document.getElementById('modal-body-text');
+      const htmlBody = document.getElementById('modal-body-html');
+      htmlBody.style.display = 'none';
+      textBody.style.display = 'block';
+      textBody.textContent = text;
+      bg.style.display = 'block';
+    }}
+    function openModalHtml(html) {{
+      const bg = document.getElementById('modal-bg');
+      const textBody = document.getElementById('modal-body-text');
+      const htmlBody = document.getElementById('modal-body-html');
+      textBody.style.display = 'none';
+      htmlBody.style.display = 'block';
+      htmlBody.innerHTML = html;
       bg.style.display = 'block';
     }}
     function closeModal() {{
@@ -355,24 +384,56 @@ class Handler(BaseHTTPRequestHandler):
     async function openModalFromUrl(url) {{
       const res = await fetch(url);
       const txt = await res.text();
-      openModal(txt);
+      openModalText(txt);
+    }}
+    async function openModalHtmlFromUrl(url) {{
+      const res = await fetch(url);
+      const txt = await res.text();
+      openModalHtml(txt);
+    }}
+    async function apiPost(path, payload) {{
+      const res = await fetch(path, {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify(payload || {{}}),
+      }});
+      const text = await res.text();
+      return {{ok: res.ok, status: res.status, text: text}};
+    }}
+    async function approveJob(jobId) {{
+      const r = await apiPost('/approve-web', {{job_id: jobId, approved_by: 'web-user', notes: 'approved via dashboard'}});
+      if (!r.ok) {{ openModalText(r.text); return; }}
+      location.reload();
+    }}
+    async function deleteJob(jobId) {{
+      if (!confirm('Delete job ' + jobId + '? This removes inputs and outputs.')) return;
+      const r = await apiPost('/delete-web', {{job_id: jobId}});
+      if (!r.ok) {{ openModalText(r.text); return; }}
+      location.reload();
     }}
   </script>
 </head>
 <body>
   <h1>Caipture Control Center</h1>
-  <div class=\"sub\">Updated: <span class=\"mono\">{payload['timestamp']}</span></div>
+  {banner}
+  <div class=\"sub\">Updated: <span class=\"mono\">{payload['timestamp']}</span> <button class='inline' onclick=\"location.reload()\">Refresh</button></div>
 
   <div class=\"grid\">
     <div class=\"card\">
       <h3>Upload (Camera/File)</h3>
       <form action=\"/upload-web\" method=\"post\" enctype=\"multipart/form-data\">
-        <label>Front image</label>
-        <input type=\"file\" name=\"front_file\" accept=\"image/*\" capture=\"environment\" required />
-        <label>Back image</label>
-        <input type=\"file\" name=\"back_file\" accept=\"image/*\" capture=\"environment\" required />
+        <label>Subject image (required)</label>
+        <input type=\"file\" name=\"subject_file\" accept=\"image/*\" capture=\"environment\" required />
+        <label>Back image (optional)</label>
+        <input type=\"file\" name=\"back_file\" accept=\"image/*\" capture=\"environment\" />
         <label>Context images (optional)</label>
-        <input type=\"file\" name=\"context_files\" accept=\"image/*\" multiple />
+        <input type=\"file\" name=\"context_files\" accept=\"image/*\" capture=\"environment\" multiple />
+        <label>Manual date (optional)</label>
+        <input type=\"date\" name=\"manual_date\" />
+        <label>Manual location (optional)</label>
+        <input type=\"text\" name=\"manual_location\" placeholder=\"City, country\" />
+        <label>Manual comment/description (optional)</label>
+        <textarea name=\"manual_comment\" placeholder=\"People, event, notes\"></textarea>
         <label>Auto run pipeline once after upload</label>
         <input type=\"text\" name=\"auto_run\" value=\"true\" />
         <button type=\"submit\">Upload Job</button>
@@ -395,14 +456,14 @@ class Handler(BaseHTTPRequestHandler):
     <div class=\"card\"><h3>Job Status Counts</h3><table>{status_rows}</table></div>
     <div class=\"card\"><h3>Stage Totals</h3><table>{stage_rows}</table></div>
 
-    <div class=\"card wide\"><h3>Jobs Queue and Approval</h3>
+    <div class=\"card wide\"><h3>Jobs Queue, Links, Actions</h3>
       <table>
-        <tr><td><strong>job_id</strong></td><td><strong>status</strong></td><td><strong>details</strong></td><td><strong>approve</strong></td><td><strong>export</strong></td></tr>
+        <tr><td><strong>job_id</strong></td><td><strong>status</strong></td><td><strong>details</strong></td><td><strong>approve</strong></td><td><strong>preview/export</strong></td><td><strong>delete</strong></td></tr>
         {jobs_table}
       </table>
     </div>
 
-    <div class=\"card journal\"><h3>Recent Journal Actions</h3>
+    <div class=\"card journal\"><h3>Recent Journal Actions (newest first)</h3>
       <p><button onclick=\"openModalFromUrl('/journal')\">Open full journal feed</button></p>
       <div class=\"actions\">
         <table>
@@ -415,26 +476,29 @@ class Handler(BaseHTTPRequestHandler):
 
   <div id=\"modal-bg\" class=\"modal-bg\" onclick=\"closeModal()\">
     <div class=\"modal\" onclick=\"event.stopPropagation()\">
-      <p><button onclick=\"closeModal()\">Close</button></p>
-      <pre id=\"modal-body\"></pre>
+      <p><button class='inline' onclick=\"closeModal()\">Close</button></p>
+      <pre id=\"modal-body-text\"></pre>
+      <div id=\"modal-body-html\" class=\"preview\" style=\"display:none\"></div>
     </div>
   </div>
 </body>
 </html>
 """
 
-    def _send_file(self, path: Path, download_name: str) -> None:
+    def _send_file(self, path: Path, download_name: str, inline: bool = False) -> None:
         data = path.read_bytes()
         ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        disposition = "inline" if inline else "attachment"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Content-Disposition", f"attachment; filename={download_name}")
+        self.send_header("Content-Disposition", f"{disposition}; filename={download_name}")
         self.end_headers()
         self.wfile.write(data)
 
     def do_GET(self) -> None:  # noqa: N802
         self._log_action("http_get", {"path": self.path})
+
         if self.path == "/health":
             self._json_response(HTTPStatus.OK, {"status": "ok"})
             return
@@ -442,15 +506,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json_response(HTTPStatus.OK, self._monitoring_payload())
             return
         if self.path == "/journal":
-            self._json_response(HTTPStatus.OK, {"entries": self._journal().tail(1000)})
+            self._json_response(HTTPStatus.OK, {"entries": list(reversed(self._journal().tail(1000)))})
             return
+
         if self.path.startswith("/process/"):
             name = self.path.split("/process/", 1)[1]
             payload = self._monitoring_payload()
-            service = payload["services"].get(name)
-            metric = payload["process_metrics"].get(name)
-            self._json_response(HTTPStatus.OK, {"service": name, "status": service, "metric": metric})
+            self._json_response(HTTPStatus.OK, {"service": name, "status": payload["services"].get(name), "metric": payload["process_metrics"].get(name)})
             return
+
         if self.path.startswith("/download/"):
             parts = self.path.strip("/").split("/")
             if len(parts) == 3:
@@ -461,18 +525,53 @@ class Handler(BaseHTTPRequestHandler):
                     return
             self._json_response(HTTPStatus.NOT_FOUND, {"error": "artifact not found"})
             return
-        if self.path == "/":
-            payload = self._monitoring_payload()
-            self._html_response(HTTPStatus.OK, self._render_dashboard(payload))
+
+        if self.path.startswith("/preview/"):
+            m = re.match(r"^/preview/([^/]+)/(image|metadata)$", self.path)
+            if not m:
+                self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            job_id, kind = m.group(1), m.group(2)
+            paths = self._job_export_paths(job_id)
+            if kind == "image":
+                if not paths["image"].exists():
+                    self._html_response(HTTPStatus.NOT_FOUND, "<p>Image not available.</p>")
+                    return
+                html = (
+                    f"<h3>Export preview: {job_id}</h3>"
+                    f"<p><img src='/download/{job_id}/image' alt='export image' /></p>"
+                    f"<p><a href='/download/{job_id}/image' target='_blank'>open image in new tab</a></p>"
+                )
+                self._html_response(HTTPStatus.OK, html)
+                return
+            if not paths["sidecar"].exists():
+                self._json_response(HTTPStatus.NOT_FOUND, {"error": "metadata not available"})
+                return
+            self._json_response(HTTPStatus.OK, json.loads(paths["sidecar"].read_text(encoding="utf-8")))
             return
+
         if self.path.startswith("/jobs/"):
-            job_id = self.path.split("/jobs/", 1)[1]
+            suffix = self.path.split("/jobs/", 1)[1]
+            if suffix.endswith("/events"):
+                job_id = suffix[: -len("/events")]
+                self._json_response(HTTPStatus.OK, {"job_id": job_id, "events": self.pipeline.queue.fetch_events(job_id)})
+                return
+            job_id = suffix
             job = self.pipeline.queue.fetch_job(job_id)
             if not job:
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "job not found"})
                 return
             self._json_response(HTTPStatus.OK, job)
             return
+
+        if self.path.startswith("/"):
+            parsed = urllib.parse.urlsplit(self.path)
+            if parsed.path == "/":
+                msg = urllib.parse.parse_qs(parsed.query).get("msg", [""])[0]
+                payload = self._monitoring_payload()
+                self._html_response(HTTPStatus.OK, self._render_dashboard(payload, message=msg))
+                return
+
         self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -480,23 +579,51 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/upload":
                 body = self._read_json()
+                subject_path = body.get("subject_path") or body.get("front_path")
+                if not subject_path:
+                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": "subject_path is required"})
+                    return
                 result = self.pipeline.create_job(
-                    front_path=body["front_path"],
-                    back_path=body["back_path"],
+                    subject_path=subject_path,
+                    back_path=body.get("back_path"),
                     context_paths=body.get("context_paths", []),
+                    manual_context=body.get("manual_context", {}),
                 )
                 self._json_response(HTTPStatus.CREATED, result)
                 return
 
             if self.path == "/approve-web":
-                form = self._read_form()
-                job_id = form.get("job_id", "")
-                approved_by = form.get("approved_by", "web-user")
+                ctype = self.headers.get("Content-Type", "")
+                if "application/json" in ctype:
+                    body = self._read_json()
+                    job_id = body.get("job_id", "")
+                    approved_by = body.get("approved_by", "web-user")
+                    notes = body.get("notes", "approved via web")
+                else:
+                    form = self._read_form()
+                    job_id = form.get("job_id", "")
+                    approved_by = form.get("approved_by", "web-user")
+                    notes = form.get("notes", "approved via web")
                 if not job_id:
                     self._json_response(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
                     return
-                self.pipeline.apply_review(job_id, approved_by=approved_by, notes="approved via web")
-                self._html_response(HTTPStatus.OK, "<html><body><h2>Job approved</h2><p><a href='/'>Back</a></p></body></html>")
+                self.pipeline.apply_review(job_id, approved_by=approved_by, notes=notes)
+                self._json_response(HTTPStatus.OK, {"ok": True, "job_id": job_id})
+                return
+
+            if self.path == "/delete-web":
+                ctype = self.headers.get("Content-Type", "")
+                if "application/json" in ctype:
+                    body = self._read_json()
+                    job_id = body.get("job_id", "")
+                else:
+                    form = self._read_form()
+                    job_id = form.get("job_id", "")
+                if not job_id:
+                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
+                    return
+                deleted = self.pipeline.delete_job(job_id)
+                self._json_response(HTTPStatus.OK, {"ok": deleted, "job_id": job_id})
                 return
 
             if self.path == "/upload-web":
@@ -504,8 +631,8 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
                 body_raw = self.rfile.read(length)
                 fields, files = _parse_multipart_form(content_type, body_raw)
-                if "front_file" not in files or "back_file" not in files:
-                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": "front_file and back_file are required"})
+                if "subject_file" not in files:
+                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": "subject_file is required"})
                     return
 
                 runtime_upload_dir = self._runtime_dir() / "web_uploads"
@@ -519,26 +646,34 @@ class Handler(BaseHTTPRequestHandler):
                     p.write_bytes(file_item["content"])
                     return p
 
-                front_path = _save_file(files["front_file"][0], "front")
-                back_path = _save_file(files["back_file"][0], "back")
+                subject_path = _save_file(files["subject_file"][0], "subject")
+
+                back_path: str | None = None
+                if files.get("back_file"):
+                    back_path = str(_save_file(files["back_file"][0], "back"))
+
                 context_paths = []
                 for idx, c in enumerate(files.get("context_files", []), start=1):
                     context_paths.append(str(_save_file(c, f"context_{idx:03d}")))
 
-                result = self.pipeline.create_job(str(front_path), str(back_path), context_paths)
+                manual_context = {
+                    "date": fields.get("manual_date", "").strip(),
+                    "location": fields.get("manual_location", "").strip(),
+                    "comment": fields.get("manual_comment", "").strip(),
+                }
+
+                result = self.pipeline.create_job(
+                    subject_path=str(subject_path),
+                    back_path=back_path,
+                    context_paths=context_paths,
+                    manual_context=manual_context,
+                )
                 auto_run = fields.get("auto_run", "true").strip().lower() in {"1", "true", "yes", "y"}
                 if auto_run:
                     run = self.pipeline.run_all_once()
                     self._log_action("web_upload_auto_run", {"job_id": result["job_id"], "run": run})
 
-                html = (
-                    "<html><body>"
-                    f"<h2>Upload successful</h2><p>job_id: <code>{result['job_id']}</code></p>"
-                    "<p><a href='/'>Back to dashboard</a></p>"
-                    f"<p><button onclick=\"window.location='/'\">Open dashboard</button></p>"
-                    "</body></html>"
-                )
-                self._html_response(HTTPStatus.CREATED, html)
+                self._redirect(f"/?msg=Upload+successful:+{result['job_id']}")
                 return
 
             if self.path == "/run-all-once":
@@ -556,6 +691,7 @@ class Handler(BaseHTTPRequestHandler):
             self._log_action("http_error", {"path": self.path, "error": str(exc)})
             self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             return
+
         self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
 
