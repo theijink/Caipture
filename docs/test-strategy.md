@@ -64,6 +64,7 @@ Examples:
 - metadata worker + llm-gateway stub interaction
 - review update persistence
 - export generation with sidecar
+- worker-cv real-fixture regressions over the committed `front*` image set
 
 ## 2.3 Smoke Tests (`tests/smoke/`)
 

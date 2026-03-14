@@ -34,6 +34,8 @@ flowchart LR
 - `podman` installed `brew install podman`
 - `docker` installed `brew install docker`
 - `python` installed
+- ImageMagick installed `brew install imagemagick`
+- OpenCV installed `brew install opencv`
 
 ## Configuration
 
@@ -168,6 +170,7 @@ scripts/test/run_bdd.sh
 Current implementation details:
 
 - CV stage auto-orients mobile-origin inputs before subject detection and uses OpenCV candidate scoring before ImageMagick fallback trim/resize.
+- OpenCV (`opencv-python` + `numpy`) is a runtime dependency for reliable generic "photo-of-a-photo" cropping; ImageMagick-only fallback is intentionally weaker.
 - OCR stage uses `tesseract` CLI (sidecar `.txt` remains supported for deterministic tests).
 - LLM gateway logic is enabled by default in config and contributes metadata descriptions.
 - Export stage writes contextual comment metadata and aligns output file timestamp to inferred historical date when available.
@@ -261,6 +264,7 @@ Core steps:
 
 - preferred path auto-orients the input and scores multiple OpenCV rectangle candidates before perspective transform
 - fallback path uses ImageMagick trim/resize on the auto-oriented input
+- `opencv-python` and `numpy` are required at runtime for the preferred generic photo-of-a-photo path
 - artifacts:
   - `derived/front_cropped.png`
   - `derived/front_rectified.png`

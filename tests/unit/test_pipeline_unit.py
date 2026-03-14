@@ -113,3 +113,32 @@ class PipelineUnitTests(unittest.TestCase):
             cropped_area = cropped_image.shape[0] * cropped_image.shape[1]
             source_area = source_image.shape[0] * source_image.shape[1]
             self.assertLess(cropped_area, source_area * 0.8)
+
+    @unittest.skipIf(cv2 is None, "opencv-python not available")
+    def test_cv_transform_crops_real_front_fixture_set(self) -> None:
+        fixture_root = Path(__file__).resolve().parents[1] / "fixtures"
+        fixtures = sorted(fixture_root.glob("front*.png")) + sorted(fixture_root.glob("front*.jpg"))
+        self.assertTrue(fixtures)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root)
+            pipeline = Pipeline(cfg_path)
+
+            for fixture in fixtures:
+                cropped = root / f"{fixture.stem}_cropped.png"
+                rectified = root / f"{fixture.stem}_rectified.png"
+                pipeline._run_cv_transform(fixture, cropped, rectified)
+
+                source_image = cv2.imread(str(fixture))
+                cropped_image = cv2.imread(str(cropped))
+                self.assertIsNotNone(source_image, fixture.name)
+                self.assertIsNotNone(cropped_image, fixture.name)
+
+                source_shape = tuple(source_image.shape[:2])
+                cropped_shape = tuple(cropped_image.shape[:2])
+                cropped_area = cropped_image.shape[0] * cropped_image.shape[1]
+                source_area = source_image.shape[0] * source_image.shape[1]
+
+                self.assertNotEqual(cropped_shape, source_shape, fixture.name)
+                self.assertLess(cropped_area, source_area * 0.95, fixture.name)
