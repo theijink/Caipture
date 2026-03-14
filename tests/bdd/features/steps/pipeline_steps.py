@@ -100,7 +100,11 @@ def step_inputs(context, text: str) -> None:
 @given("the web server is started for browser testing")
 def step_start_web(context) -> None:
     Handler.pipeline = context.pipeline
-    context.web_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    try:
+        context.web_server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    except PermissionError as exc:
+        context.scenario.skip(f"socket bind not permitted in current environment: {exc}")
+        return
     host, port = context.web_server.server_address
     context.web_base_url = f"http://{host}:{port}"
     context.web_thread = threading.Thread(target=context.web_server.serve_forever, daemon=True)

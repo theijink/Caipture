@@ -5,9 +5,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 export PYTHONPATH=src
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-python3 -c "import behave" >/dev/null 2>&1 || {
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [[ -x "venv/bin/python" ]]; then
+  PYTHON_BIN="venv/bin/python"
+fi
+"$PYTHON_BIN" -m unittest discover -s tests -p 'test_*.py' -v
+"$PYTHON_BIN" -c "import behave" >/dev/null 2>&1 || {
   echo "behave is not installed. Install dev dependencies: python3 -m pip install -r requirements-dev.txt"
   exit 1
 }
-python3 -m behave tests/bdd/features
+"$PYTHON_BIN" -m behave tests/bdd/features

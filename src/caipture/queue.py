@@ -1,7 +1,9 @@
 from __future__ import annotations
+ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -52,13 +54,25 @@ class JobQueue:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _session(self):
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.executescript(SCHEMA_SQL)
 
     def create_job(self, job: dict[str, Any]) -> None:
         now = utc_now_iso()
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(
                 """
                 INSERT INTO jobs (
@@ -80,7 +94,7 @@ class JobQueue:
         self.journal.log("queue", "create_job", {"job_id": job["job_id"], "item_id": job["item_id"]})
 
     def set_status(self, job_id: str, status: JobStatus, error_code: str | None = None, error_message: str | None = None) -> None:
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(
                 "UPDATE jobs SET status=?, updated_at=?, error_code=?, error_message=? WHERE job_id=?",
                 (status.value, utc_now_iso(), error_code, error_message, job_id),
@@ -100,11 +114,11 @@ class JobQueue:
         parts.append("updated_at=?")
         values.append(utc_now_iso())
         values.append(job_id)
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(f"UPDATE jobs SET {', '.join(parts)} WHERE job_id=?", values)
 
     def fetch_job(self, job_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
+        with self._session() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if row is None:
                 return None
@@ -115,7 +129,7 @@ class JobQueue:
             return data
 
     def list_jobs(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._session() as conn:
             rows = conn.execute("SELECT * FROM jobs ORDER BY created_at").fetchall()
         out = []
         for row in rows:
@@ -127,7 +141,7 @@ class JobQueue:
         return out
 
     def add_event(self, job_id: str, stage: str, event: str, details: dict[str, Any]) -> None:
-        with self._connect() as conn:
+        with self._session() as conn:
             conn.execute(
                 "INSERT INTO events(job_id, stage, event, timestamp, details) VALUES (?,?,?,?,?)",
                 (job_id, stage, event, utc_now_iso(), json.dumps(details, sort_keys=True)),
@@ -135,7 +149,7 @@ class JobQueue:
         self.journal.log("queue", "event", {"job_id": job_id, "stage": stage, "event": event, "details": details})
 
     def fetch_events(self, job_id: str) -> list[dict[str, Any]]:
-        with self._connect() as conn:
+        with self._session() as conn:
             rows = conn.execute(
                 "SELECT stage, event, timestamp, details FROM events WHERE job_id=? ORDER BY id",
                 (job_id,),

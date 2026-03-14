@@ -175,6 +175,11 @@ failed
 `FR-076` CV stage shall crop and resize front-image content into derived output artifacts.
 `FR-077` OCR stage shall execute OCR on back/context images and persist extracted text artifacts.
 `FR-078` Export stage shall include inferred historical date/location/context fields in export metadata mapping and file metadata where supported.
+`FR-079` Web service shall be configurable to bind to local-network interfaces for mobile device access.
+`FR-080` Web upload form shall support direct camera capture on capable mobile devices.
+`FR-081` State/detail views from dashboard interactions should be rendered in-page (modal/popup) instead of forcing raw JSON tabs.
+`FR-082` Metadata extraction shall fuse OCR evidence from both back and context images; context-only evidence must still populate canonical metadata.
+`FR-083` OCR pipeline shall support handwriting-oriented preprocessing and multi-pass OCR strategy, configurable by profile.
 
 ---
 

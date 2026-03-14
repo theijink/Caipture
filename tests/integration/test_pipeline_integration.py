@@ -94,3 +94,45 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertEqual(pipeline.queue.fetch_job(job_id)["status"], "validation_failed")
             self.assertEqual(pipeline.run_ocr_worker_once(), 0)
             self.assertEqual(pipeline.run_metadata_worker_once(), 0)
+
+    def test_context_ocr_evidence_populates_metadata_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root, cv_min_bytes=10)
+
+            front = root / "front.png"
+            back = root / "back.png"
+            context = root / "context.png"
+            make_png(front, 1800, 1600)
+            make_png(back, 1800, 1600)
+            make_png(context, 1800, 1600)
+
+            # Back text intentionally sparse; context contains key metadata signals.
+            back.with_suffix(".txt").write_text("Family photo", encoding="utf-8")
+            context.with_suffix(".txt").write_text(
+                "Wedding 1954-07-12 Enschede Jan de Vries Maria de Vries",
+                encoding="utf-8",
+            )
+
+            pipeline = Pipeline(cfg_path)
+            created = pipeline.create_job(str(front), str(back), [str(context)])
+            job_id = created["job_id"]
+
+            self.assertEqual(pipeline.run_cv_worker_once(), 1)
+            self.assertEqual(pipeline.run_ocr_worker_once(), 1)
+            self.assertEqual(pipeline.run_metadata_worker_once(), 1)
+
+            metadata_path = Path(pipeline.config["storage"]["root"]) / "jobs" / job_id / "metadata" / "photo_item.json"
+            doc = json.loads(metadata_path.read_text(encoding="utf-8"))
+            hist = doc["historical_metadata"]
+
+            self.assertEqual(hist["date"]["precision"], "day")
+            self.assertEqual(hist["date"]["from"], "1954-07-12")
+            self.assertIn("Enschede", hist["location"]["normalized"]["name"])
+            self.assertGreaterEqual(len(hist["people"]), 1)
+            self.assertEqual(hist["event"]["name"], "Wedding")
+            self.assertIn("Wedding", hist["source_text"]["context_ocr_text"])
+            self.assertEqual(
+                doc["derived"]["context_ocr_texts"],
+                ["derived/context_ocr_001.txt"],
+            )

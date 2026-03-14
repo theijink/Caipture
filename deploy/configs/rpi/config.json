@@ -25,7 +25,9 @@
   "ocr": {
     "engine": "deterministic-filename-ocr",
     "language": "eng",
-    "psm": 6
+    "psm": 6,
+    "psm_candidates": [6, 11, 12],
+    "enable_preprocessing": true
   },
   "metadata": {
     "pipeline_version": "0.2.0",

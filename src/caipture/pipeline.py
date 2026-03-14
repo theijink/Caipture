@@ -15,6 +15,13 @@ from caipture.session_metrics import SessionMetrics
 from caipture.store import Storage
 from caipture.utils import image_dimensions, read_json, sha256_file, utc_now_iso, write_json
 
+try:
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+except Exception:  # pragma: no cover - optional runtime dependency
+    cv2 = None
+    np = None
+
 
 class Pipeline:
     def __init__(self, config_path: str | Path | None = None) -> None:
@@ -108,23 +115,31 @@ class Pipeline:
             self.queue.add_event(job_id, "ocr", "started", {})
             try:
                 derived_dir = self.storage.job_dir(job_id) / "derived"
-                text_parts = []
+                text_parts: list[str] = []
                 confs: list[float] = []
-                for rel in [job["back_input"], *job["context_inputs"]]:
+                ocr_refs: list[str] = []
+                for idx, rel in enumerate([job["back_input"], *job["context_inputs"]]):
                     p = self.storage.job_dir(job_id) / rel
                     text, conf = self._extract_ocr_text(p)
                     text_parts.append(text)
                     confs.append(conf)
+                    if idx == 0:
+                        out_ref = "derived/back_ocr.txt"
+                        (derived_dir / "back_ocr.txt").write_text(text, encoding="utf-8")
+                    else:
+                        out_ref = f"derived/context_ocr_{idx:03d}.txt"
+                        (derived_dir / f"context_ocr_{idx:03d}.txt").write_text(text, encoding="utf-8")
+                    ocr_refs.append(out_ref)
 
                 back_text = text_parts[0] if text_parts else ""
                 context_text = "\n".join(text_parts[1:])
-                (derived_dir / "back_ocr.txt").write_text(back_text, encoding="utf-8")
                 (derived_dir / "context_ocr.txt").write_text(context_text, encoding="utf-8")
                 write_json(
                     derived_dir / "ocr_report.json",
                     {
                         "back_confidence": confs[0] if confs else self._confidence_for_text(back_text),
                         "context_confidence": (sum(confs[1:]) / len(confs[1:])) if len(confs) > 1 else self._confidence_for_text(context_text),
+                        "ocr_artifacts": ocr_refs,
                     },
                 )
                 self.queue.update_flags(job_id, ocr_done=True)
@@ -146,6 +161,12 @@ class Pipeline:
                 job_dir = self.storage.job_dir(job_id)
                 back_text = (job_dir / "derived" / "back_ocr.txt").read_text(encoding="utf-8") if (job_dir / "derived" / "back_ocr.txt").exists() else ""
                 context_text = (job_dir / "derived" / "context_ocr.txt").read_text(encoding="utf-8") if (job_dir / "derived" / "context_ocr.txt").exists() else ""
+                context_parts = []
+                for i in range(1, 32):
+                    p = job_dir / "derived" / f"context_ocr_{i:03d}.txt"
+                    if not p.exists():
+                        break
+                    context_parts.append(p.read_text(encoding="utf-8"))
                 merged_text = "\n".join([back_text, context_text]).strip()
 
                 date_obj = self._infer_date(merged_text)
@@ -180,7 +201,7 @@ class Pipeline:
                         "front_rectified": "derived/front_rectified.png",
                         "front_cropped": "derived/front_cropped.png",
                         "back_ocr_text": "derived/back_ocr.txt",
-                        "context_ocr_texts": ["derived/context_ocr.txt"],
+                        "context_ocr_texts": [f"derived/context_ocr_{i:03d}.txt" for i in range(1, len(context_parts) + 1)] or ["derived/context_ocr.txt"],
                         "validation_report": "derived/validation_report.json",
                         "ocr_report": "derived/ocr_report.json",
                     },
@@ -188,6 +209,12 @@ class Pipeline:
                         "date": date_obj,
                         "location": location_obj,
                         "people": people_obj,
+                        "source_text": {
+                            "back_ocr_text": back_text,
+                            "context_ocr_text": context_text,
+                            "context_ocr_texts": context_parts,
+                        },
+                        "event": self._infer_event(merged_text),
                         "description": {
                             "text": llm_summary["description"] or self._infer_description(merged_text, people_obj, location_obj),
                             "confidence": llm_summary["confidence"] if llm_summary["description"] else 0.6,
@@ -348,21 +375,47 @@ class Pipeline:
             return text, self._confidence_for_text(text)
 
         lang = str(self.config["ocr"].get("language", "eng"))
-        psm = str(self.config["ocr"].get("psm", 6))
-        ocr_cmd = ["tesseract", str(path), "stdout", "-l", lang, "--psm", psm]
-        try:
-            out = subprocess.run(ocr_cmd, capture_output=True, text=True, check=True)
-            text = out.stdout.strip()
-        except Exception:
-            base = path.stem.replace("_", " ").replace("-", " ")
-            text = base.strip()
-            return text, self._confidence_for_text(text)
+        psm_candidates = self.config["ocr"].get("psm_candidates", [6, 11, 12])
+        preprocessed_paths = self._build_ocr_preprocess_variants(path)
 
-        # Use TSV for confidence where possible.
+        best_text = ""
+        best_conf = 0.0
+        best_score = -1.0
+
+        for variant in preprocessed_paths:
+            for psm in psm_candidates:
+                text, conf = self._run_tesseract(variant, lang=lang, psm=int(psm))
+                score = conf + min(len(text.split()) / 30.0, 0.3)
+                if score > best_score:
+                    best_score = score
+                    best_text = text
+                    best_conf = conf
+
+        for p in preprocessed_paths:
+            if p != path and p.exists():
+                p.unlink(missing_ok=True)
+
+        if not best_text:
+            base = path.stem.replace("_", " ").replace("-", " ")
+            best_text = base.strip()
+            best_conf = self._confidence_for_text(best_text)
+        return best_text, best_conf
+
+    def _run_tesseract(self, path: Path, lang: str, psm: int) -> tuple[str, float]:
+        try:
+            text = subprocess.run(
+                ["tesseract", str(path), "stdout", "-l", lang, "--psm", str(psm)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except Exception:
+            return "", 0.0
+
         conf = self._confidence_for_text(text)
         try:
             tsv = subprocess.run(
-                ["tesseract", str(path), "stdout", "-l", lang, "--psm", psm, "tsv"],
+                ["tesseract", str(path), "stdout", "-l", lang, "--psm", str(psm), "tsv"],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -384,6 +437,26 @@ class Pipeline:
             pass
         return text, conf
 
+    def _build_ocr_preprocess_variants(self, path: Path) -> list[Path]:
+        variants = [path]
+        if not bool(self.config["ocr"].get("enable_preprocessing", True)):
+            return variants
+        tmp_dir = path.parent
+        alt1 = tmp_dir / f"{path.stem}_ocr_gray{path.suffix}"
+        alt2 = tmp_dir / f"{path.stem}_ocr_thresh{path.suffix}"
+        cmds = [
+            ["magick", str(path), "-colorspace", "Gray", "-contrast-stretch", "0", "-sharpen", "0x1", str(alt1)],
+            ["magick", str(path), "-colorspace", "Gray", "-median", "1", "-threshold", "55%", str(alt2)],
+        ]
+        for cmd, out in zip(cmds, [alt1, alt2]):
+            try:
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+                if out.exists():
+                    variants.append(out)
+            except Exception:
+                out.unlink(missing_ok=True)
+        return variants
+
     def _confidence_for_text(self, text: str) -> float:
         if not text.strip():
             return 0.2
@@ -392,6 +465,18 @@ class Pipeline:
         return 0.75
 
     def _infer_date(self, text: str) -> dict[str, Any] | None:
+        full_date = re.search(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b", text)
+        if full_date:
+            y, m, d = full_date.groups()
+            iso = f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+            return {
+                "raw_text": full_date.group(0),
+                "from": iso,
+                "to": iso,
+                "precision": "day",
+                "confidence": 0.82,
+                "sources": [{"source_type": "ocr_text", "source_ref": "derived/back_ocr.txt", "excerpt": full_date.group(0)}],
+            }
         year_match = re.search(r"\b(18\d{2}|19\d{2}|20\d{2})\b", text)
         if not year_match:
             return None
@@ -482,6 +567,25 @@ class Pipeline:
             bits.append("Context: " + " ".join(text.split()[:25]))
         return " | ".join(bits) if bits else "Historical photograph."
 
+    def _infer_event(self, text: str) -> dict[str, Any] | None:
+        keywords = {
+            "wedding": "Wedding",
+            "birthday": "Birthday",
+            "vacation": "Vacation",
+            "school": "School",
+            "graduation": "Graduation",
+            "christmas": "Christmas",
+        }
+        low = text.lower()
+        for k, label in keywords.items():
+            if k in low:
+                return {
+                    "name": label,
+                    "confidence": 0.65,
+                    "sources": [{"source_type": "ocr_text", "source_ref": "derived/context_ocr.txt", "excerpt": k}],
+                }
+        return None
+
     def _file_ref_dict(self, abs_path: Path, rel_path: str) -> dict[str, Any]:
         return {
             "path": rel_path,
@@ -490,6 +594,10 @@ class Pipeline:
         }
 
     def _run_cv_transform(self, input_path: Path, cropped_path: Path, rectified_path: Path) -> None:
+        if cv2 is not None and np is not None:
+            if self._run_cv_transform_opencv(input_path, cropped_path, rectified_path):
+                return
+
         fuzz = str(self.config["cv"].get("trim_fuzz_percent", 10))
         target = str(self.config["cv"].get("target_size", "1600x1200"))
         cmd_crop = [
@@ -516,6 +624,89 @@ class Pipeline:
             # Fallback keeps pipeline running but still produces artifacts.
             shutil.copy2(input_path, cropped_path)
             shutil.copy2(input_path, rectified_path)
+
+    def _run_cv_transform_opencv(self, input_path: Path, cropped_path: Path, rectified_path: Path) -> bool:
+        try:
+            image = cv2.imread(str(input_path))
+            if image is None:
+                return False
+            original = image.copy()
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blur, 40, 120)
+            edges = cv2.dilate(edges, None, iterations=2)
+            edges = cv2.erode(edges, None, iterations=1)
+
+            contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+            best_quad = None
+            img_area = image.shape[0] * image.shape[1]
+            for contour in contours[:20]:
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                area = cv2.contourArea(approx)
+                if len(approx) == 4 and area > img_area * 0.1:
+                    best_quad = approx.reshape(4, 2).astype("float32")
+                    break
+
+            if best_quad is not None:
+                rect = self._order_points(best_quad)
+                warped = self._four_point_transform(original, rect)
+                cv2.imwrite(str(cropped_path), warped)
+                rectified = self._resize_for_target(warped)
+                cv2.imwrite(str(rectified_path), rectified)
+                return True
+
+            # Fallback to largest contour bounding box crop.
+            if contours:
+                x, y, w, h = cv2.boundingRect(contours[0])
+                crop = original[y : y + h, x : x + w]
+                cv2.imwrite(str(cropped_path), crop)
+                rectified = self._resize_for_target(crop)
+                cv2.imwrite(str(rectified_path), rectified)
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _resize_for_target(self, image: Any) -> Any:
+        target = str(self.config["cv"].get("target_size", "1600x1200"))
+        tw, th = 1600, 1200
+        try:
+            tw_s, th_s = target.lower().split("x", 1)
+            tw, th = int(tw_s), int(th_s)
+        except Exception:
+            pass
+        h, w = image.shape[:2]
+        scale = min(tw / max(w, 1), th / max(h, 1), 1.0)
+        new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+        return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    def _order_points(self, pts: Any) -> Any:
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+        return rect
+
+    def _four_point_transform(self, image: Any, rect: Any) -> Any:
+        (tl, tr, br, bl) = rect
+        width_a = np.linalg.norm(br - bl)
+        width_b = np.linalg.norm(tr - tl)
+        max_width = int(max(width_a, width_b))
+        height_a = np.linalg.norm(tr - br)
+        height_b = np.linalg.norm(tl - bl)
+        max_height = int(max(height_a, height_b))
+
+        dst = np.array(
+            [[0, 0], [max_width - 1, 0], [max_width - 1, max_height - 1], [0, max_height - 1]],
+            dtype="float32",
+        )
+        m = cv2.getPerspectiveTransform(rect, dst)
+        return cv2.warpPerspective(image, m, (max_width, max_height))
 
     def _build_export_comment(self, doc: dict[str, Any]) -> str:
         hist = doc.get("historical_metadata", {})

@@ -43,6 +43,7 @@ Responsibilities:
 - status and metrics API
 - export trigger/download
 - operator dashboard (including queue approval actions and journal visibility)
+- LAN/mobile-friendly hosting (local network bind support)
 
 Must not:
 
@@ -65,6 +66,7 @@ Responsibilities:
 - OCR on back/context images
 - confidence extraction
 - artifact emission and event updates
+- multi-pass OCR strategy with optional preprocessing for handwriting robustness
 
 ## 3.4 `services/worker-metadata`
 
@@ -76,6 +78,7 @@ Responsibilities:
 - canonical metadata generation
 - schema validation
 - review requirement decision
+- explicit fusion of OCR evidence from back and all context images
 
 ## 3.5 `services/worker-export`
 
@@ -311,6 +314,7 @@ Each service should expose health endpoints for liveness/readiness.
 
 Web service should also expose a monitoring dashboard/API aggregating service health, application status, queue/process counts, LLM usage counters, and system load.
 For debugging, runtime actions should be appended to a central journal file (for example `storage/runtime/journal.jsonl`).
+Dashboard detail views should be consumable in-page (for example modal/popup JSON views) rather than requiring navigation to raw JSON tabs.
 
 ---
 
