@@ -26,3 +26,30 @@ def make_png(path: Path, width: int, height: int, rgb: tuple[int, int, int] = (1
 
     payload = png_sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
     path.write_bytes(payload)
+
+
+def make_jpeg(path: Path, width: int, height: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def segment(marker: bytes, payload: bytes) -> bytes:
+        return marker + struct.pack(">H", len(payload) + 2) + payload
+
+    app0 = b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    sof0 = (
+        b"\x08"
+        + struct.pack(">H", height)
+        + struct.pack(">H", width)
+        + b"\x03"
+        + b"\x01\x11\x00"
+        + b"\x02\x11\x00"
+        + b"\x03\x11\x00"
+    )
+    payload = b"".join(
+        [
+            b"\xff\xd8",
+            segment(b"\xff\xe0", app0),
+            segment(b"\xff\xc0", sof0),
+            b"\xff\xd9",
+        ]
+    )
+    path.write_bytes(payload)

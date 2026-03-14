@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 
 from caipture.pipeline import Pipeline
-from tests.test_utils import make_png
+from tests.test_utils import make_jpeg, make_png
 
 
 class PipelineUnitTests(unittest.TestCase):
     def _make_config(self, root: Path) -> Path:
         cfg = {
             "storage": {"root": str(root / "storage")},
-            "upload": {"allowed_image_formats": ["png"], "min_longest_side_px": 1500},
+            "upload": {"allowed_image_formats": ["png", "jpg", "jpeg"], "min_longest_side_px": 1500},
             "cv": {"engine": "cv", "min_short_side_px": 900, "min_bytes": 100},
             "ocr": {"engine": "ocr", "language": "eng"},
             "metadata": {
@@ -55,3 +55,14 @@ class PipelineUnitTests(unittest.TestCase):
             job_dir = Path(pipeline.config["storage"]["root"]) / "jobs" / result["job_id"]
             self.assertTrue((job_dir / "inputs" / "front.png").exists())
             self.assertTrue((job_dir / "inputs" / "back.png").exists())
+
+    def test_upload_accepts_jpeg_subject_and_preserves_original_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root)
+            subject = root / "phone.jpg"
+            make_jpeg(subject, 3024, 4032)
+            pipeline = Pipeline(cfg_path)
+            result = pipeline.create_job(subject_path=str(subject), context_paths=[])
+            job_dir = Path(pipeline.config["storage"]["root"]) / "jobs" / result["job_id"]
+            self.assertTrue((job_dir / "inputs" / "front.jpg").exists())

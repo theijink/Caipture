@@ -12,7 +12,7 @@ from behave import given, then, when
 
 from caipture.pipeline import Pipeline
 from services.web.server import Handler
-from tests.test_utils import make_png
+from tests.test_utils import make_jpeg, make_png
 
 
 def _make_config(root: Path, cv_min_bytes: int) -> Path:
@@ -145,6 +145,27 @@ def step_upload_fixtures(context) -> None:
         context.upload_response = response.read().decode("utf-8", errors="replace")
 
 
+@when("I upload a JPEG subject through the web page form")
+def step_upload_jpeg_subject(context) -> None:
+    subject = context.root / "phone.jpg"
+    make_jpeg(subject, 3024, 4032)
+
+    body, boundary = _build_multipart(
+        fields={"auto_run": "false"},
+        files={
+            "subject_file": ("phone.jpg", subject.read_bytes(), "image/jpeg"),
+        },
+    )
+    req = urllib.request.Request(
+        context.web_base_url + "/upload-web",
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as response:
+        context.upload_response = response.read().decode("utf-8", errors="replace")
+
+
 @then("a job should be created from web upload")
 def step_job_created(context) -> None:
     jobs = context.pipeline.queue.list_jobs()
@@ -159,6 +180,14 @@ def step_journal_has_actions(context) -> None:
     text = journal.read_text(encoding="utf-8")
     assert "http_post" in text
     assert "create_job" in text
+
+
+@then("the created web job should preserve the JPEG input")
+def step_web_job_preserves_jpeg(context) -> None:
+    job = context.pipeline.queue.list_jobs()[-1]
+    assert job["front_input"].endswith(".jpg")
+    job_dir = Path(context.pipeline.config["storage"]["root"]) / "jobs" / job["job_id"]
+    assert (job_dir / job["front_input"]).exists()
 
 
 @when("I create a new processing job")

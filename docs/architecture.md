@@ -122,9 +122,9 @@ Network and mount policy must enforce these boundaries.
 
 ## 5.1 Upload
 
-1. Web validates request and config constraints.
+1. Web validates request and config constraints, including configured raw image formats such as PNG and JPEG.
 2. Web assigns `job_id` and `item_id`.
-3. Raw files are written to `storage/jobs/<job_id>/inputs/`.
+3. Raw files are written unchanged to `storage/jobs/<job_id>/inputs/`, preserving original suffix/format.
 4. Job state set to `uploaded` then `queued`.
 
 ## 5.2 CV Stage

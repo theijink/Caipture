@@ -11,6 +11,7 @@ Core steps:
 - crop original photo from full upload
 - apply perspective correction where detectable
 - resize to configured output bounds
+- normalize derived outputs to PNG regardless of whether the raw input was PNG or JPEG
 
 ## Implementation
 

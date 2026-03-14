@@ -16,7 +16,7 @@ class ConfigTests(unittest.TestCase):
                 json.dumps(
                     {
                         "storage": {"root": "storage"},
-                        "upload": {"allowed_image_formats": ["png"], "min_longest_side_px": 1500},
+                        "upload": {"allowed_image_formats": ["png", "jpg", "jpeg"], "min_longest_side_px": 1500},
                         "cv": {},
                         "ocr": {},
                         "metadata": {},

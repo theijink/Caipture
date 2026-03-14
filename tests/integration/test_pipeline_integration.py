@@ -13,7 +13,7 @@ class PipelineIntegrationTests(unittest.TestCase):
     def _make_config(self, root: Path, cv_min_bytes: int = 100) -> Path:
         cfg = {
             "storage": {"root": str(root / "storage")},
-            "upload": {"allowed_image_formats": ["png"], "min_longest_side_px": 1500},
+            "upload": {"allowed_image_formats": ["png", "jpg", "jpeg"], "min_longest_side_px": 1500},
             "cv": {"engine": "cv", "min_short_side_px": 900, "min_bytes": cv_min_bytes},
             "ocr": {"engine": "ocr", "language": "eng"},
             "metadata": {

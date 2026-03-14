@@ -31,8 +31,8 @@ flowchart LR
 
 ## Requirements
 - Written for macOS/Linux 
-- `podman` installed
-- `docker` installed
+- `podman` installed `brew install podman`
+- `docker` installed `brew install docker`
 - `python` installed
 
 ## Configuration
@@ -90,13 +90,15 @@ Monitoring behavior is configurable via `monitoring` section in config:
 
 Open `http://127.0.0.1:8080/` and use **Upload Via Web Page** form:
 
-1. Select subject image.
-2. Optionally select back and context images.
+1. Select subject image (`.png`, `.jpg`, or `.jpeg`).
+2. Optionally select back and context images in the same supported formats.
 3. Optionally provide manual date/location/comment when no back image is available.
 4. Submit form.
 5. Approve `review_required` jobs from **Jobs Queue and Approval**.
 6. Preview export image and metadata inline on the dashboard.
 7. Track actions in **Recent Journal Actions** (newest first).
+
+Uploaded originals are preserved in their original format under `storage/jobs/<job_id>/inputs/`; downstream derived and export images remain normalized to PNG.
 
 ### Central Journal (debug)
 
@@ -122,7 +124,7 @@ scripts/dev/stop_all.sh
 
 ```bash
 PYTHONPATH=src python3 -m caipture.cli --config deploy/configs/dev/config.json \
-  upload --subject /path/to/subject.png --back /path/to/back.png \
+  upload --subject /path/to/subject.jpg --back /path/to/back.jpeg \
   --manual-date 1954-07-12 --manual-location \"Enschede\" --manual-comment \"Family portrait\"
 ```
 
@@ -198,7 +200,7 @@ Provides the local operator interface and API entrypoint for Caipture.
 Core responsibilities:
 
 - host dashboard UI (`/`)
-- accept subject/back/context uploads via web form and JSON API
+- accept subject/back/context uploads via web form and JSON API (`png`, `jpg`, `jpeg`)
 - expose monitoring and process state
 - allow approving and deleting jobs from queue widget
 - provide preview and download links for generated export image and metadata
@@ -252,6 +254,7 @@ Core steps:
 - crop original photo from full upload
 - apply perspective correction where detectable
 - resize to configured output bounds
+- normalize derived outputs to PNG regardless of whether the raw input was PNG or JPEG
 
 ## Implementation
 

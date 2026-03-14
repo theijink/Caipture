@@ -32,3 +32,10 @@ Feature: End-to-end processing pipeline
     When I upload fixture files through the web page form
     Then a job should be created from web upload
     And the central journal should contain web upload actions
+
+  Scenario: Web page upload accepts JPEG subject files
+    Given a temporary Caipture test environment
+    And the web server is started for browser testing
+    When I upload a JPEG subject through the web page form
+    Then a job should be created from web upload
+    And the created web job should preserve the JPEG input

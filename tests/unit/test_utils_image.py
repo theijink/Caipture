@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from caipture.utils import image_dimensions
-from tests.test_utils import make_png
+from tests.test_utils import make_jpeg, make_png
 
 
 class ImageDimensionTests(unittest.TestCase):
@@ -16,6 +16,7 @@ class ImageDimensionTests(unittest.TestCase):
             self.assertEqual(image_dimensions(p), (123, 456))
 
     def test_jpeg_dimensions_detected(self) -> None:
-        fixture = Path(__file__).resolve().parents[1] / "fixtures" / "front.png"
-        dims = image_dimensions(fixture)
-        self.assertEqual(dims, (3024, 4032))
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "sample.jpg"
+            make_jpeg(p, 321, 654)
+            self.assertEqual(image_dimensions(p), (321, 654))
