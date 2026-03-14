@@ -583,11 +583,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not subject_path:
                     self._json_response(HTTPStatus.BAD_REQUEST, {"error": "subject_path is required"})
                     return
+                manual_context = body.get("manual_context")
+                if not isinstance(manual_context, dict):
+                    manual_context = {
+                        "date": body.get("manual_date", ""),
+                        "location": body.get("manual_location", ""),
+                        "comment": body.get("manual_comment") or body.get("manual_description", ""),
+                    }
                 result = self.pipeline.create_job(
                     subject_path=subject_path,
                     back_path=body.get("back_path"),
                     context_paths=body.get("context_paths", []),
-                    manual_context=body.get("manual_context", {}),
+                    manual_context=manual_context,
                 )
                 self._json_response(HTTPStatus.CREATED, result)
                 return
@@ -659,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
                 manual_context = {
                     "date": fields.get("manual_date", "").strip(),
                     "location": fields.get("manual_location", "").strip(),
-                    "comment": fields.get("manual_comment", "").strip(),
+                    "comment": (fields.get("manual_comment", "") or fields.get("manual_description", "")).strip(),
                 }
 
                 result = self.pipeline.create_job(

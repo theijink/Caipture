@@ -15,8 +15,8 @@ Core steps:
 
 ## Implementation
 
-- preferred path uses OpenCV contour + perspective transform
-- fallback path uses ImageMagick trim/resize
+- preferred path auto-orients the input and scores multiple OpenCV rectangle candidates before perspective transform
+- fallback path uses ImageMagick trim/resize on the auto-oriented input
 - artifacts:
   - `derived/front_cropped.png`
   - `derived/front_rectified.png`

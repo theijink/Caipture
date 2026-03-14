@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from caipture.pipeline import Pipeline
-from tests.test_utils import make_png
+from tests.test_utils import make_jpeg, make_png
 
 
 class PipelineIntegrationTests(unittest.TestCase):
@@ -135,4 +135,42 @@ class PipelineIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 doc["derived"]["context_ocr_texts"],
                 ["derived/context_ocr_001.txt"],
+            )
+
+    def test_manual_metadata_without_back_image_completes_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root, cv_min_bytes=10)
+
+            subject = root / "front.jpg"
+            make_jpeg(subject, 3024, 4032)
+
+            pipeline = Pipeline(cfg_path)
+            created = pipeline.create_job(
+                subject_path=str(subject),
+                context_paths=[],
+                manual_context={
+                    "manual_date": "1954-07-12",
+                    "manual_location": "Enschede",
+                    "manual_description": "Family portrait on market day",
+                },
+            )
+            job_id = created["job_id"]
+
+            self.assertEqual(pipeline.run_cv_worker_once(), 1)
+            self.assertEqual(pipeline.run_ocr_worker_once(), 1)
+            self.assertEqual(pipeline.run_metadata_worker_once(), 1)
+
+            metadata_path = Path(pipeline.config["storage"]["root"]) / "jobs" / job_id / "metadata" / "photo_item.json"
+            doc = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["historical_metadata"]["date"]["from"], "1954-07-12")
+            self.assertEqual(doc["historical_metadata"]["location"]["normalized"]["name"], "Enschede")
+            self.assertEqual(doc["historical_metadata"]["description"]["text"], "Family portrait on market day")
+            self.assertEqual(
+                doc["historical_metadata"]["source_text"]["manual_context"],
+                {
+                    "date": "1954-07-12",
+                    "location": "Enschede",
+                    "comment": "Family portrait on market day",
+                },
             )

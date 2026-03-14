@@ -92,7 +92,7 @@ Open `http://127.0.0.1:8080/` and use **Upload Via Web Page** form:
 
 1. Select subject image (`.png`, `.jpg`, or `.jpeg`).
 2. Optionally select back and context images in the same supported formats.
-3. Optionally provide manual date/location/comment when no back image is available.
+3. Optionally provide manual date/location/comment when no back image is available; these values are accepted as first-class evidence and can drive metadata generation on their own.
 4. Submit form.
 5. Approve `review_required` jobs from **Jobs Queue and Approval**.
 6. Preview export image and metadata inline on the dashboard.
@@ -167,7 +167,7 @@ scripts/test/run_bdd.sh
 
 Current implementation details:
 
-- CV stage uses ImageMagick (`magick`) for auto-trim crop and resize.
+- CV stage auto-orients mobile-origin inputs before subject detection and uses OpenCV candidate scoring before ImageMagick fallback trim/resize.
 - OCR stage uses `tesseract` CLI (sidecar `.txt` remains supported for deterministic tests).
 - LLM gateway logic is enabled by default in config and contributes metadata descriptions.
 - Export stage writes contextual comment metadata and aligns output file timestamp to inferred historical date when available.
@@ -201,6 +201,7 @@ Core responsibilities:
 
 - host dashboard UI (`/`)
 - accept subject/back/context uploads via web form and JSON API (`png`, `jpg`, `jpeg`)
+- persist manual upload metadata (`date`, `location`, `comment`/`description`) even when no back image is present
 - expose monitoring and process state
 - allow approving and deleting jobs from queue widget
 - provide preview and download links for generated export image and metadata
@@ -258,8 +259,8 @@ Core steps:
 
 ## Implementation
 
-- preferred path uses OpenCV contour + perspective transform
-- fallback path uses ImageMagick trim/resize
+- preferred path auto-orients the input and scores multiple OpenCV rectangle candidates before perspective transform
+- fallback path uses ImageMagick trim/resize on the auto-oriented input
 - artifacts:
   - `derived/front_cropped.png`
   - `derived/front_rectified.png`

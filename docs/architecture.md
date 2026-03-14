@@ -124,13 +124,13 @@ Network and mount policy must enforce these boundaries.
 
 1. Web validates request and config constraints, including configured raw image formats such as PNG and JPEG.
 2. Web assigns `job_id` and `item_id`.
-3. Raw files are written unchanged to `storage/jobs/<job_id>/inputs/`, preserving original suffix/format.
+3. Raw files are written unchanged to `storage/jobs/<job_id>/inputs/`, preserving original suffix/format, and manual upload metadata is normalized into canonical `date`/`location`/`comment` fields.
 4. Job state set to `uploaded` then `queued`.
 
 ## 5.2 CV Stage
 
 1. CV worker consumes queued job.
-2. Runs validation checks and subject-image transforms.
+2. Auto-orients mobile-origin inputs, runs validation checks, and attempts subject-image extraction using scored rectangle candidates before fallback trimming.
 3. On validation failure: state `validation_failed`.
 4. On success: writes derived artifacts, emits events.
 

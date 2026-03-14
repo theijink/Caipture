@@ -166,6 +166,32 @@ def step_upload_jpeg_subject(context) -> None:
         context.upload_response = response.read().decode("utf-8", errors="replace")
 
 
+@when("I upload a JPEG subject with manual metadata through the web page form")
+def step_upload_jpeg_subject_manual(context) -> None:
+    subject = context.root / "phone.jpg"
+    make_jpeg(subject, 3024, 4032)
+
+    body, boundary = _build_multipart(
+        fields={
+            "auto_run": "true",
+            "manual_date": "1954-07-12",
+            "manual_location": "Enschede",
+            "manual_comment": "Family portrait on market day",
+        },
+        files={
+            "subject_file": ("phone.jpg", subject.read_bytes(), "image/jpeg"),
+        },
+    )
+    req = urllib.request.Request(
+        context.web_base_url + "/upload-web",
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as response:
+        context.upload_response = response.read().decode("utf-8", errors="replace")
+
+
 @then("a job should be created from web upload")
 def step_job_created(context) -> None:
     jobs = context.pipeline.queue.list_jobs()
@@ -188,6 +214,16 @@ def step_web_job_preserves_jpeg(context) -> None:
     assert job["front_input"].endswith(".jpg")
     job_dir = Path(context.pipeline.config["storage"]["root"]) / "jobs" / job["job_id"]
     assert (job_dir / job["front_input"]).exists()
+
+
+@then("the created web job should store the manual metadata")
+def step_web_job_has_manual_metadata(context) -> None:
+    job = context.pipeline.queue.list_jobs()[-1]
+    assert job["manual_context"] == {
+        "date": "1954-07-12",
+        "location": "Enschede",
+        "comment": "Family portrait on market day",
+    }
 
 
 @when("I create a new processing job")

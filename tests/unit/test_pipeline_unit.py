@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from caipture.pipeline import Pipeline
-from tests.test_utils import make_jpeg, make_png
+from tests.test_utils import cv2, make_jpeg, make_photo_scene, make_png
 
 
 class PipelineUnitTests(unittest.TestCase):
@@ -66,3 +66,50 @@ class PipelineUnitTests(unittest.TestCase):
             result = pipeline.create_job(subject_path=str(subject), context_paths=[])
             job_dir = Path(pipeline.config["storage"]["root"]) / "jobs" / result["job_id"]
             self.assertTrue((job_dir / "inputs" / "front.jpg").exists())
+
+    def test_manual_context_aliases_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root)
+            subject = root / "phone.jpg"
+            make_jpeg(subject, 3024, 4032)
+            pipeline = Pipeline(cfg_path)
+            result = pipeline.create_job(
+                subject_path=str(subject),
+                manual_context={
+                    "manual_date": "1954-07-12",
+                    "manual_location": "Enschede",
+                    "description": "Family portrait at the market",
+                },
+            )
+            job = pipeline.queue.fetch_job(result["job_id"])
+            self.assertEqual(
+                job["manual_context"],
+                {
+                    "date": "1954-07-12",
+                    "location": "Enschede",
+                    "comment": "Family portrait at the market",
+                },
+            )
+
+    @unittest.skipIf(cv2 is None, "opencv-python not available")
+    def test_cv_transform_finds_subject_photo_in_generic_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cfg_path = self._make_config(root)
+            scene = root / "scene.jpg"
+            make_photo_scene(scene)
+            pipeline = Pipeline(cfg_path)
+            cropped = root / "cropped.png"
+            rectified = root / "rectified.png"
+
+            pipeline._run_cv_transform(scene, cropped, rectified)
+
+            self.assertTrue(cropped.exists())
+            cropped_image = cv2.imread(str(cropped))
+            source_image = cv2.imread(str(scene))
+            self.assertIsNotNone(cropped_image)
+            self.assertIsNotNone(source_image)
+            cropped_area = cropped_image.shape[0] * cropped_image.shape[1]
+            source_area = source_image.shape[0] * source_image.shape[1]
+            self.assertLess(cropped_area, source_area * 0.8)

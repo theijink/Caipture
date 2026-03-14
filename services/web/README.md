@@ -8,6 +8,7 @@ Core responsibilities:
 
 - host dashboard UI (`/`)
 - accept subject/back/context uploads via web form and JSON API (`png`, `jpg`, `jpeg`)
+- persist manual upload metadata (`date`, `location`, `comment`/`description`) even when no back image is present
 - expose monitoring and process state
 - allow approving and deleting jobs from queue widget
 - provide preview and download links for generated export image and metadata

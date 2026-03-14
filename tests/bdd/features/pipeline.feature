@@ -39,3 +39,10 @@ Feature: End-to-end processing pipeline
     When I upload a JPEG subject through the web page form
     Then a job should be created from web upload
     And the created web job should preserve the JPEG input
+
+  Scenario: Web page upload accepts manual metadata without back image
+    Given a temporary Caipture test environment
+    And the web server is started for browser testing
+    When I upload a JPEG subject with manual metadata through the web page form
+    Then a job should be created from web upload
+    And the created web job should store the manual metadata

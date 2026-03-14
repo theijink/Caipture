@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,7 @@ class Pipeline:
         manual_context: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         context_paths = context_paths or []
-        manual_context = manual_context or {}
+        manual_context = self._normalize_manual_context(manual_context)
         job_id = f"job_{utc_now_iso().replace('-', '').replace(':', '').replace('T', '_').replace('Z', '')}_{len(self.queue.list_jobs())+1:04d}"
         item_id = f"item_{job_id.split('_', 1)[1]}"
 
@@ -680,36 +681,41 @@ class Pipeline:
         }
 
     def _run_cv_transform(self, input_path: Path, cropped_path: Path, rectified_path: Path) -> None:
-        if cv2 is not None and np is not None:
-            if self._run_cv_transform_opencv(input_path, cropped_path, rectified_path):
-                return
-
-        fuzz = str(self.config["cv"].get("trim_fuzz_percent", 10))
-        target = str(self.config["cv"].get("target_size", "1600x1200"))
-        cmd_crop = [
-            "magick",
-            str(input_path),
-            "-auto-orient",
-            "-fuzz",
-            f"{fuzz}%",
-            "-trim",
-            "+repage",
-            str(cropped_path),
-        ]
-        cmd_rect = [
-            "magick",
-            str(cropped_path),
-            "-resize",
-            f"{target}>",
-            str(rectified_path),
-        ]
+        prepared_input, should_cleanup = self._prepare_cv_input(input_path)
         try:
-            subprocess.run(cmd_crop, check=True, capture_output=True, text=True)
-            subprocess.run(cmd_rect, check=True, capture_output=True, text=True)
-        except Exception:
-            # Fallback keeps pipeline running but still produces artifacts.
-            shutil.copy2(input_path, cropped_path)
-            shutil.copy2(input_path, rectified_path)
+            if cv2 is not None and np is not None:
+                if self._run_cv_transform_opencv(prepared_input, cropped_path, rectified_path):
+                    return
+
+            fuzz = str(self.config["cv"].get("trim_fuzz_percent", 10))
+            target = str(self.config["cv"].get("target_size", "1600x1200"))
+            cmd_crop = [
+                "magick",
+                str(prepared_input),
+                "-auto-orient",
+                "-fuzz",
+                f"{fuzz}%",
+                "-trim",
+                "+repage",
+                str(cropped_path),
+            ]
+            cmd_rect = [
+                "magick",
+                str(cropped_path),
+                "-resize",
+                f"{target}>",
+                str(rectified_path),
+            ]
+            try:
+                subprocess.run(cmd_crop, check=True, capture_output=True, text=True)
+                subprocess.run(cmd_rect, check=True, capture_output=True, text=True)
+            except Exception:
+                # Fallback keeps pipeline running but still produces artifacts.
+                shutil.copy2(prepared_input, cropped_path)
+                shutil.copy2(prepared_input, rectified_path)
+        finally:
+            if should_cleanup:
+                prepared_input.unlink(missing_ok=True)
 
     def _run_cv_transform_opencv(self, input_path: Path, cropped_path: Path, rectified_path: Path) -> bool:
         try:
@@ -717,40 +723,14 @@ class Pipeline:
             if image is None:
                 return False
             original = image.copy()
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            blur = cv2.GaussianBlur(gray, (5, 5), 0)
-            edges = cv2.Canny(blur, 40, 120)
-            edges = cv2.dilate(edges, None, iterations=2)
-            edges = cv2.erode(edges, None, iterations=1)
-
-            contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)
-            best_quad = None
-            img_area = image.shape[0] * image.shape[1]
-            for contour in contours[:20]:
-                peri = cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-                area = cv2.contourArea(approx)
-                if len(approx) == 4 and area > img_area * 0.1:
-                    best_quad = approx.reshape(4, 2).astype("float32")
-                    break
-
-            if best_quad is not None:
-                rect = self._order_points(best_quad)
-                warped = self._four_point_transform(original, rect)
+            candidate = self._find_photo_candidate(original)
+            if candidate is not None:
+                warped = self._four_point_transform(original, candidate)
                 cv2.imwrite(str(cropped_path), warped)
                 rectified = self._resize_for_target(warped)
                 cv2.imwrite(str(rectified_path), rectified)
                 return True
 
-            # Fallback to largest contour bounding box crop.
-            if contours:
-                x, y, w, h = cv2.boundingRect(contours[0])
-                crop = original[y : y + h, x : x + w]
-                cv2.imwrite(str(cropped_path), crop)
-                rectified = self._resize_for_target(crop)
-                cv2.imwrite(str(rectified_path), rectified)
-                return True
             return False
         except Exception:
             return False
@@ -793,6 +773,123 @@ class Pipeline:
         )
         m = cv2.getPerspectiveTransform(rect, dst)
         return cv2.warpPerspective(image, m, (max_width, max_height))
+
+    def _normalize_manual_context(self, manual_context: dict[str, Any] | None) -> dict[str, str]:
+        data = manual_context if isinstance(manual_context, dict) else {}
+
+        def _pick(*keys: str) -> str:
+            for key in keys:
+                value = data.get(key, "")
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if text:
+                    return text
+            return ""
+
+        return {
+            "date": _pick("date", "manual_date"),
+            "location": _pick("location", "manual_location"),
+            "comment": _pick("comment", "description", "manual_comment", "manual_description"),
+        }
+
+    def _prepare_cv_input(self, input_path: Path) -> tuple[Path, bool]:
+        if shutil.which("magick") is None:
+            return input_path, False
+
+        fd, tmp_path = tempfile.mkstemp(prefix="cv_oriented_", suffix=".png", dir=input_path.parent)
+        Path(tmp_path).unlink(missing_ok=True)
+        try:
+            subprocess.run(
+                ["magick", str(input_path), "-auto-orient", tmp_path],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return Path(tmp_path), True
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            return input_path, False
+
+    def _find_photo_candidate(self, image: Any) -> Any | None:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        image_area = float(image.shape[0] * image.shape[1])
+        center = np.array([image.shape[1] / 2.0, image.shape[0] / 2.0], dtype="float32")
+
+        masks = []
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 40, 120)
+        edges = cv2.dilate(edges, None, iterations=2)
+        edges = cv2.erode(edges, None, iterations=1)
+        masks.append(edges)
+
+        adaptive = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
+        adaptive = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=2)
+        masks.append(adaptive)
+
+        _, otsu = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        otsu = cv2.morphologyEx(otsu, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8), iterations=2)
+        masks.append(otsu)
+
+        best_rect = None
+        best_score = 0.0
+        min_area_ratio = float(self.config["cv"].get("candidate_min_area_ratio", 0.18))
+        max_area_ratio = float(self.config["cv"].get("candidate_max_area_ratio", 0.97))
+
+        for mask in masks:
+            contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:60]
+            for contour in contours:
+                area = float(cv2.contourArea(contour))
+                if area <= 0:
+                    continue
+                area_ratio = area / image_area
+                if area_ratio < min_area_ratio or area_ratio > max_area_ratio:
+                    continue
+
+                peri = cv2.arcLength(contour, True)
+                approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+                if len(approx) == 4:
+                    pts = approx.reshape(4, 2).astype("float32")
+                else:
+                    rect = cv2.minAreaRect(contour)
+                    pts = cv2.boxPoints(rect).astype("float32")
+
+                ordered = self._order_points(pts)
+                width_top = np.linalg.norm(ordered[1] - ordered[0])
+                width_bottom = np.linalg.norm(ordered[2] - ordered[3])
+                height_left = np.linalg.norm(ordered[3] - ordered[0])
+                height_right = np.linalg.norm(ordered[2] - ordered[1])
+                width = max(width_top, width_bottom)
+                height = max(height_left, height_right)
+                if width < 200 or height < 200:
+                    continue
+
+                rect_area = max(width * height, 1.0)
+                fill_ratio = max(0.0, min(area / rect_area, 1.0))
+                aspect_ratio = max(width, height) / max(min(width, height), 1.0)
+                candidate_center = ordered.mean(axis=0)
+                center_distance = float(np.linalg.norm(candidate_center - center)) / max(image.shape[0], image.shape[1], 1)
+                border_margin = min(image.shape[0], image.shape[1]) * 0.015
+                border_touches = sum(
+                    1
+                    for x, y in ordered
+                    if x <= border_margin
+                    or y <= border_margin
+                    or x >= image.shape[1] - border_margin
+                    or y >= image.shape[0] - border_margin
+                )
+                centeredness = max(0.0, 1.0 - center_distance * 2.0)
+                aspect_score = max(0.0, 1.0 - abs(aspect_ratio - 1.35) / 1.8)
+                score = (area_ratio * 1.8) + (fill_ratio * 1.1) + (centeredness * 0.7) + (aspect_score * 0.3) - (border_touches * 0.18)
+
+                if score > best_score:
+                    best_score = score
+                    best_rect = ordered
+
+        if best_rect is not None and best_score >= float(self.config["cv"].get("candidate_min_score", 0.95)):
+            return best_rect
+        return None
 
     def _build_export_comment(self, doc: dict[str, Any]) -> str:
         hist = doc.get("historical_metadata", {})

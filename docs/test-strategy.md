@@ -60,6 +60,7 @@ Examples:
 
 - upload -> queue -> cv -> ocr -> metadata
 - upload acceptance for both PNG and JPEG mobile-origin files
+- subject-only uploads with manual date/location/comment metadata
 - metadata worker + llm-gateway stub interaction
 - review update persistence
 - export generation with sidecar
@@ -99,6 +100,7 @@ Additional integration assertions must verify OCR evidence fusion:
 - back/context source text persistence into canonical metadata
 - per-context OCR artifact references (`context_ocr_###.txt`)
 - web upload path accepts JPEG subject images without converting raw evidence in place
+- generic “photo of a photo” CV fixtures should verify that cropping does not regress to full-frame or obviously wrong bounds
 
 ---
 
